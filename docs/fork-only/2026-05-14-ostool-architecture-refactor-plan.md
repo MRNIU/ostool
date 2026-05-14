@@ -120,10 +120,11 @@ R0 复核后的关键修正：
 - Docker 复现 CI 时要补齐 Node 24、pnpm 10.33.0、QEMU、U-Boot tools 和 `libudev-dev`。
   不要用 `apt --no-install-recommends` 缩减 QEMU/U-Boot 包；否则会缺 `dtc` 或 QEMU ROM/firmware，
   得到与 CI 不等价的失败。
-- 2026-05-14 的 Docker 复核里，全量 `cargo test` 在
-  `ostool-server/tests/session_ws_lifecycle.rs::abrupt_ws_drop_powers_off_and_releases_session`
-  卡住，没有形成全仓库 green baseline。R0/R1 结论不能把这条写成已通过；需要作为独立测试稳定性问题
-  跟进或在 CI 中确认。
+- 2026-05-14 的 devbox 复核中，原先卡住的 `ostool-server/tests/session_ws_lifecycle.rs`
+  已作为测试稳定性问题修复：测试 helper 关闭 builtin TFTP，graceful close 路径等待 server
+  `closed` 消息；`session_ws_lifecycle` 在 devbox host target 通过。
+- 当前 devbox 是 aarch64 host target，不等价于 CI 的 `x86_64-unknown-linux-gnu` target；精确 x86
+  target 仍需 CI 或带 x86_64 cross compiler/sysroot 的环境确认。
 - 无法在本机或 CI 复现的硬件/board-server 行为，要明确写成“未验证，需要真实环境验证”，不能用
   host-only 测试替代真实证明。
 
@@ -144,6 +145,11 @@ R1 复核后的关键执行修正：
   artifact side effect 丢失；R1e 再把这个 adapter 收敛到正式 runtime artifact helper。
 - R1g 改造 runner/board entrypoint 时必须补 board/session 最小 contract test，或明确记录真实
   board/server 路径未验证，不能用 host-only 测试冒充硬件证明。
+- R1 收口已删除 `Tool`/`ctx` 旧 API，清掉跨模块 `impl Invocation`，并把公开 runtime artifact
+  准备入口放到 `artifact` 模块；`Invocation` 公开面只保留构造、路径访问和窄状态同步入口。
+- R1 最终验证在 devbox host target 通过：`cargo fmt --all -- --check`、`cargo clippy --all-features`、
+  `cargo build --all-features`、`cargo test -- --nocapture`。精确 x86 CI target 仍需 CI 或等价 x86
+  cross 环境确认。
 
 R1 的核心模型：
 
@@ -172,7 +178,9 @@ R1 的核心模型：
 - `Tool`、`ToolConfig`、`ManifestContext`、`AppContext` 不再是核心模型名。
 - `OutputArtifacts` / `ostool::ctx` 的 Rust API 破坏边界被明确记录，除非后续为了上游兼容保留 re-export。
 - 不再有跨模块 `impl Tool`。
-- `Invocation`、`ProjectLayout`、`InvocationState` 字段私有，业务模块不把完整 `Invocation` 当新 `Tool` 传递。
+- `Invocation`、`ProjectLayout`、`InvocationState` 字段私有；公开 API 不再暴露 runtime `ctx`，业务入口不再通过
+  跨模块 `impl Invocation` 扩展。少数内部模块函数仍接收 `&mut Invocation` 作为 state owner，后续 R2/R5
+  继续拆窄 Cargo lifecycle 与 runner command plan。
 - Cargo executable resolution 与 runtime `.elf` / `.bin` preparation 解耦。
 - `ostool build`、`ostool run qemu`、`ostool run uboot`、`ostool board run`、`cargo-osrun`
   和现有配置入口保持不变。

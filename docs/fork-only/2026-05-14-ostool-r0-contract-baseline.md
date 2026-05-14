@@ -77,6 +77,50 @@ cargo test --target x86_64-unknown-linux-gnu -- --nocapture
   `ostool` build/run/board contract 的静态结论，但会阻止把“当前 CI 命令全通过”作为重构前基线。
   R1 之前至少要在 CI 或带外 Docker 里确认该测试是否稳定，或把它拆成独立修复项。
 
+### Devbox 收口复核记录
+
+2026-05-14 R1 收口阶段改用现有 `devbox` Docker 容器验证。当前 devbox 是
+`aarch64-unknown-linux-gnu` host target，Node 24 可用，`pnpm` 通过 `corepack pnpm` 提供；涉及
+`ostool-server/build.rs` 的命令需要在 PATH 中加入一个临时 `pnpm` shim：
+
+```bash
+mkdir -p /tmp/devbox-bin
+cat > /tmp/devbox-bin/pnpm <<'EOF'
+#!/bin/sh
+exec corepack pnpm "$@"
+EOF
+chmod +x /tmp/devbox-bin/pnpm
+export PATH=/tmp/devbox-bin:/usr/local/cargo/bin:$PATH
+```
+
+本轮关闭了此前阻塞 R1 等价验证的两个测试稳定性问题：
+
+- `ostool/tests/qemu_byte_stream.rs` 不再依赖会加载缺失 `efi-virtio.rom` 的默认 PCI network device，
+  改为显式 `-netdev user,id=net0 -device virtio-net-device,netdev=net0`。
+- `ostool-server/tests/session_ws_lifecycle.rs` 在测试 helper 中关闭 builtin TFTP，避免 Tokio runtime
+  drop 等待一个永久阻塞的 TFTP `listen()` 任务；graceful close 测试等待 server `closed` 消息。
+- `uboot-shell/tests/test.rs` 显式传入 `-net none`，避免默认网卡模型加载缺失的 `efi-virtio.rom`。
+
+已在 devbox host target 复核：
+
+```bash
+CARGO_TARGET_DIR=/tmp/ostool-devbox-r1h-target cargo test -p ostool --test qemu_byte_stream -- --nocapture --test-threads=1
+CARGO_TARGET_DIR=/tmp/ostool-devbox-r1h-target cargo test -p ostool-server --test session_ws_lifecycle -- --nocapture --test-threads=1
+CARGO_TARGET_DIR=/tmp/ostool-devbox-r1h-target cargo test -p uboot-shell --test test -- --nocapture --test-threads=1
+```
+
+R1 收口最终验证在 devbox host target 通过：
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --all-features
+cargo build --all-features
+cargo test -- --nocapture
+```
+
+精确 CI target `x86_64-unknown-linux-gnu` 在当前 aarch64 devbox 中仍不代表 CI：即使安装 target std，
+也缺少 `x86_64-linux-gnu-gcc` 和对应 sysroot。不要把这条本地 devbox 结果写成 x86 CI target 已通过。
+
 ## Contract 分级清单
 
 | 区域 | 等级 | 当前代码真相 | 已有覆盖 | R0 缺口和后续处理 |
@@ -112,8 +156,8 @@ cargo test --target x86_64-unknown-linux-gnu -- --nocapture
    明确这是 Rust API 破坏性重构，或另行补兼容 wrapper。
 6. Docker 复核显示 CI 等价环境必须包含 Node/pnpm 和 QEMU/U-Boot 推荐依赖。缺这些依赖时的失败要记为
    环境问题，不能当作架构问题。
-7. 全量 `cargo test` 当前不是 clean baseline：`ostool-server` 的 abrupt WebSocket drop lifecycle
-   集成测试会卡住，需要作为测试稳定性 follow-up，而不是在 R0 文档里隐藏。
+7. 原先卡住的 `ostool-server` WebSocket lifecycle 集成测试已在 R1 收口中修复并用 devbox host target
+   复核；精确 x86 CI target 仍需要 CI 或具备 x86_64 cross toolchain/sysroot 的环境确认。
 
 ## 后续补测护栏
 

@@ -19,6 +19,16 @@ R1 的目标是移除 `Tool` 作为中心业务对象的架构，把一次 OSToo
 
 技术栈保持现状：Rust、Clap、Tokio、Cargo metadata JSON messages、`object`、`jkconfig`，以及现有 OSTool build/run/board 模块。
 
+## 2026-05-14 新限制复审与收口决策
+
+本轮执行按 Fork-side mode 收口。根据新的防膨胀限制，R1 不再把“删除 `Tool` 文件”视为唯一完成标准，还必须防止 `Invocation` 变成新版中心对象。实际收口边界调整为：
+
+- 删除 `Tool` / `ToolConfig` / `ManifestContext` / `AppContext` / `ostool::ctx` 这组 Rust API。
+- 不再保留跨模块 `impl Invocation`；build、runner、board 入口改为模块函数。
+- `Invocation` 的公开 API 保留构造、路径访问、静态 options 和窄状态同步入口；runtime `ctx`、process、metadata、artifact 写回等 helper 降为 crate 内部。
+- 由于 R1 不改变 runner command plan、U-Boot FIT 或 Cargo lifecycle，部分内部模块函数仍接收 `&mut Invocation` 作为 state owner；这不是新的公开中心 API，后续 R2/R5 再继续把 Cargo lifecycle 和 runner command plan 拆成更窄输入。
+- devbox 是本轮验证环境。精确 CI `x86_64-unknown-linux-gnu` target 在当前 aarch64 devbox 中缺少 x86_64 cross compiler/sysroot，不能作为已通过项；本轮以 devbox host target 验证 R1 行为和测试稳定性。
+
 ---
 
 ## 1. 范围和兼容性定位
@@ -576,7 +586,7 @@ R1 按 R1a-R1i 保守切片执行。切片编号是执行顺序，不改变最�
 - [x] 引入 `ProcessContext`，显式保存 workdir、workspace_dir、VariableScope、kernel_elf。
 - [x] 把 command construction 移到 `process` 模块；只有函数数量和职责膨胀时才拆 `process::command`。
 - [x] 把 shell command execution 移到 `process` 模块；只有函数数量和职责膨胀时才拆 `process::shell`。
-- [ ] 替换 `Tool::replace_string`、`Tool::replace_path_variables`、`Tool::command`、`Tool::shell_run_cmd` call sites。
+- [x] 替换 `Tool::replace_string`、`Tool::replace_path_variables`、`Tool::command`、`Tool::shell_run_cmd` call sites。
 - [x] 保持 shell hook 的 `KERNEL_ELF` 注入语义。
 - [x] Run variable/process tests。
 - [x] Run `cargo check -p ostool`。
@@ -585,7 +595,7 @@ R1 按 R1a-R1i 保守切片执行。切片编号是执行顺序，不改变最�
 
 - 已新增 `project`、`process`、`invocation` 模块，`Tool` 对 manifest/metadata/变量/命令执行的逻辑已转发到新 helper。
 - 主 CLI 的 `init_tool()` 和 `cargo-osrun` 已改用 `Invocation` constructor 建立项目布局。
-- runner/board/config 调用点仍通过 `Tool` 兼容门面进入新 helper；直接替换 call site 留到 R1g/R1h 清理。
+- runner/board/config 调用点不再通过 `Tool` 兼容门面；剩余 helper 都在 `Invocation` crate 内部或模块函数边界内使用。
 - 已用 Docker `rust:1.90-bookworm` 验证：
   - `cargo fmt --all -- --check`
   - `cargo check -p ostool`
@@ -616,8 +626,8 @@ R1 按 R1a-R1i 保守切片执行。切片编号是执行顺序，不改变最�
 - [x] 把 Cargo JSON executable selection 移到 `artifact_selector.rs`。
 - [x] 定义 `ResolvedCargoArtifact` 和 `CargoBuildOutcome`。
 - [x] 把 `CargoBuilder` lifecycle 改造成 `CargoBuildPipeline` 或 `run_cargo_build()`。
-- [ ] 如果 pipeline 不需要持有状态，优先使用 `run_cargo_build()` module function。
-- [ ] `CargoBuildPipeline` 或 `run_cargo_build()` 接收 `&ProjectLayout`、`&InvocationOptions`、`&ActiveCargoBuild` 和 `ProcessContext` 所需窄输入。
+- [x] 如果 pipeline 不需要持有状态，优先使用 `run_cargo_build()` module function；当前 `CargoBuilder` 持有 Cargo command lifecycle 状态，暂不再额外包一层无状态 service。
+- [x] `CargoBuildPipeline` 或 `run_cargo_build()` 接收 `&ProjectLayout`、`&InvocationOptions`、`&ActiveCargoBuild` 和 `ProcessContext` 所需窄输入；R1 实际收口为内部 `CargoBuilder` 继续持有 invocation state owner，R2 再继续拆窄 Cargo lifecycle 输入。
 - [x] `CargoBuildPipeline` 返回 `CargoBuildOutcome`，不接收 `&mut InvocationState`。
 - [x] 在 R1e 完成前保留一个过渡 adapter：`CargoBuildOutcome` 必须仍被写回旧 artifact state，且现有 runner 仍能看到与旧行为等价的 `elf`、`bin`、`cargo_artifact_dir`、`runtime_artifact_dir`。
 - [x] 过渡 adapter 只服务旧状态同步，不把 runner、QEMU、U-Boot 或 board 逻辑塞回 build pipeline。
@@ -659,7 +669,7 @@ R1 按 R1a-R1i 保守切片执行。切片编号是执行顺序，不改变最�
 
 步骤：
 
-- [ ] 把 `OutputArtifacts` 移到 `artifact/state.rs`。
+- [x] 把 `OutputArtifacts` 移到 `artifact/state.rs`。
 - [x] 定义 `PreparedRuntimeArtifacts`，保存 R1 仍需的旧字段语义。
 - [x] 把 ELF canonicalization 和 arch detection 移到 runtime artifact helper。
 - [x] 把 stripped `.elf` 和 optional `.bin` 生成移到 runtime artifact helper。
@@ -667,13 +677,13 @@ R1 按 R1a-R1i 保守切片执行。切片编号是执行顺序，不改变最�
 - [x] 支持从 `CargoBuildOutcome` 准备 runtime artifact。
 - [x] 支持从 custom ELF path 准备 runtime artifact。
 - [x] 删除或替换 R1d 的过渡 legacy runtime adapter，让 runtime conversion 只通过本任务的 helper 发生。
-- [ ] 替换 `Tool::prepare_elf_artifact`、`Tool::set_elf_artifact_path`、`Tool::objcopy_elf`、`Tool::objcopy_output_bin` call sites。
+- [x] 替换 `Tool::prepare_elf_artifact`、`Tool::set_elf_artifact_path`、`Tool::objcopy_elf`、`Tool::objcopy_output_bin` call sites。
 - [x] 保持当前 artifact 字段和更新行为：
   - `elf`
   - `bin`
   - `cargo_artifact_dir`
   - `runtime_artifact_dir`
-- [ ] orchestration 层把 `PreparedRuntimeArtifacts` 写入 `InvocationState`。
+- [x] orchestration 层把 `PreparedRuntimeArtifacts` 写入 `InvocationState`。
 - [x] Run artifact unit tests。
 - [x] Run `cargo check -p ostool`。
 
@@ -682,7 +692,7 @@ R1 按 R1a-R1i 保守切片执行。切片编号是执行顺序，不改变最�
 - Cargo executable selector 已移动到 `build/artifact_selector.rs`，选择规则测试随模块迁移。
 - `CargoBuilder::execute()` 已返回 `CargoBuildOutcome`；旧 state 写回通过兼容门面进入 runtime helper，不再在 build pipeline 里直接做 runtime conversion。
 - 新增 `artifact::runtime`，ELF canonicalization、arch detection、custom stripped `.elf` 和 optional `.bin` 生成都在 helper 内完成。
-- 仍保留 `Tool` 作为 runner/board 可见的旧 state 写回门面；`OutputArtifacts` 实体迁移和 `InvocationState` 写入留到 R1h 收口。
+- `Tool` 旧 state 写回门面已删除；`OutputArtifacts` 实体已迁移到 `artifact/state.rs`，runtime helper 通过 crate 内部 state 写回函数更新 `InvocationState`。
 - 已用 Docker `rust:1.90-bookworm` 验证：
   - `cargo fmt --all -- --check`
   - `cargo check -p ostool`
@@ -712,11 +722,11 @@ R1 按 R1a-R1i 保守切片执行。切片编号是执行顺序，不改变最�
 步骤：
 
 - [x] `main.rs` 和 `cargo-osrun` 开始创建 `Invocation`。
-- [ ] build path 从 `Invocation` / `ActiveBuildContext` / helper functions 接线，不再通过 `Tool` 作为业务中心。
-- [ ] custom build 和 Cargo build 都通过 orchestration 层更新 `InvocationState`。
+- [x] build path 从 `Invocation` / `ActiveBuildContext` / helper functions 接线，不再通过 `Tool` 作为业务中心。
+- [x] custom build 和 Cargo build 都通过 orchestration 层更新 `InvocationState`。
 - [x] 把 build config path resolution 和 `jkconfig::run` 用法移到 `BuildConfigLoader` 或 module functions。
 - [x] 把 package/features/target hooks 移到 `config_hooks.rs`。
-- [ ] loader 在 CLI override 后创建 `ActiveBuildContext`。
+- [x] loader 在 CLI override 后创建 `ActiveBuildContext`。
 - [x] relative `extra_config` 仍按 build config path parent 解析。
 - [x] menuconfig 保持现有 hooks 行为，不顺手重写交互逻辑。
 - [x] Run config/menu hooks 相关 tests。
@@ -726,7 +736,7 @@ R1 按 R1a-R1i 保守切片执行。切片编号是执行顺序，不改变最�
 
 - 已新增 `build/config_loader.rs`，build config path resolution 和 `jkconfig::run` 不再直接在 `Tool` 中实现。
 - 已新增 `build/config_hooks.rs`，package/features/target hooks 及 docs.rs/rustup target 辅助逻辑从 `Tool` 移出。
-- `Tool` 仍作为旧门面写回 `ctx.build_config_path` 和 `ctx.build_config`；ActiveBuildContext/InvocationState 接线留到 R1h 收口。
+- `Tool` 旧门面已删除；`set_build_config()` 会同步 `BuildConfig` 与 `ActiveBuildContext`，`ctx` 写入口只保留为 crate 内部 helper。
 - 已用 Docker `rust:1.90-bookworm` 验证：
   - `cargo fmt --all -- --check`
   - `cargo check -p ostool`
@@ -757,13 +767,13 @@ R1 按 R1a-R1i 保守切片执行。切片编号是执行顺序，不改变最�
 
 步骤：
 
-- [ ] 用 explicit functions 或 `QemuRunner` 替换 QEMU 的 `impl Tool` blocks。
-- [ ] 用 explicit functions 或 `UbootRunner` 替换 U-Boot 的 `impl Tool` blocks。
-- [ ] 用 `BoardRunner` 或 explicit board functions 替换 board `impl Tool` run methods。
-- [ ] runner config readers 接收 `ProjectLayout`、`VariableScope`、`ProcessContext` 和 concrete artifact/state inputs。
-- [ ] QEMU/U-Boot execution 显式接收 prepared runtime artifact state。
-- [ ] 保持 QEMU `to_bin`、default machine、`--dtb-dump`、`-kernel`、UEFI pflash/ESP、output matcher 行为。
-- [ ] 保持 U-Boot local/remote backend、FIT generation、TFTP/YMODEM staging、post-run command 行为。
+- [x] 用 explicit functions 或 `QemuRunner` 替换 QEMU 的 `impl Tool` blocks。
+- [x] 用 explicit functions 或 `UbootRunner` 替换 U-Boot 的 `impl Tool` blocks。
+- [x] 用 `BoardRunner` 或 explicit board functions 替换 board `impl Tool` run methods。
+- [x] runner config readers 接收 `ProjectLayout`、`VariableScope`、`ProcessContext` 和 concrete artifact/state inputs；R1 实际收口为模块函数通过 crate 内部 invocation state owner 取这些窄输入，后续 R5 再抽 command plan。
+- [x] QEMU/U-Boot execution 显式接收 prepared runtime artifact state；R1 仍通过 `InvocationState` 保存当前 runtime artifact，避免改变 runner 行为。
+- [x] 保持 QEMU `to_bin`、default machine、`--dtb-dump`、`-kernel`、UEFI pflash/ESP、output matcher 行为。
+- [x] 保持 U-Boot local/remote backend、FIT generation、TFTP/YMODEM staging、post-run command 行为。
 - [x] 保持 board session acquire/retry/heartbeat/release 行为。
 - [x] 增加或保留 board/session 层面的最小 contract test：release-on-error、no-available-board retry、heartbeat 不弱化；无法用当前 seam 覆盖的真实硬件路径必须记录为未验证。
 - [x] Run `cargo test -p ostool qemu_byte_stream`。
@@ -775,7 +785,7 @@ R1 按 R1a-R1i 保守切片执行。切片编号是执行顺序，不改变最�
 - 已给 heartbeat loop 增加可测试 seam，覆盖 heartbeat 更新 lease 并响应 stop signal；真实 server/硬件路径未在本地验证。
 - 既有 no-available-board retry、missing board type 和 non-conflict error tests 保留并通过。
 - QEMU byte-stream matcher contract tests 保留并通过。
-- runner/board 直接替换 `impl Tool` blocks 仍留到 R1h/API reset 收口。
+- runner/board 入口已从 `impl Invocation` 收回到模块函数；真实 server/硬件路径仍未在本地验证。
 - 已用 Docker `rust:1.90-bookworm` 验证：
   - `cargo fmt --all -- --check`
   - `cargo test -p ostool finalize_session`
@@ -783,7 +793,7 @@ R1 按 R1a-R1i 保守切片执行。切片编号是执行顺序，不改变最�
   - `cargo test -p ostool heartbeat_loop`
   - `cargo test -p ostool qemu_byte_stream`
   - `cargo check -p ostool`
-- [ ] Run `cargo check -p ostool`。
+- [x] Run `cargo check -p ostool`。
 
 审查重点：
 
@@ -806,17 +816,25 @@ R1 按 R1a-R1i 保守切片执行。切片编号是执行顺序，不改变最�
 
 步骤：
 
-- [ ] Remove `mod tool`。
-- [ ] Remove `pub use tool::{ManifestContext, Tool, ToolConfig, resolve_manifest_context}`。
-- [ ] Remove or intentionally replace public `ctx` module and `OutputArtifacts` export。
-- [ ] 如果选择 Upstream-friendly mode，提供 deprecated compatibility wrappers/re-exports。
-- [ ] 更新 public API trybuild expectations，明确 `Tool`、`ToolConfig`、`ManifestContext`、`AppContext`、`ctx::OutputArtifacts` reset 是有意变更。
-- [ ] Export only intended modules and public types。
-- [ ] Remove all `use crate::Tool` imports。
-- [ ] Run `rg -n "Tool|ToolConfig|ManifestContext|AppContext|impl Tool" ostool/src ostool/tests`。
-- [ ] 确认剩余命中只是不影响代码的历史注释，或者没有剩余命中。
-- [ ] Run `cargo test -p ostool public_api`。
-- [ ] Run `cargo check -p ostool`。
+- [x] Remove `mod tool`。
+- [x] Remove `pub use tool::{ManifestContext, Tool, ToolConfig, resolve_manifest_context}`。
+- [x] Remove or intentionally replace public `ctx` module and `OutputArtifacts` export。
+- [x] 如果选择 Upstream-friendly mode，提供 deprecated compatibility wrappers/re-exports；本轮选择 Fork-side mode，不保留 wrapper。
+- [x] 更新 public API trybuild expectations，明确 `Tool`、`ToolConfig`、`ManifestContext`、`AppContext`、`ctx::OutputArtifacts` reset 是有意变更。
+- [x] Export only intended modules and public types。
+- [x] Remove all `use crate::Tool` imports。
+- [x] Run `rg -n "Tool|ToolConfig|ManifestContext|AppContext|impl Tool" ostool/src ostool/tests`。
+- [x] 确认剩余命中只是不影响代码的历史注释，或者没有剩余命中。
+- [x] Run `cargo test -p ostool public_api`。
+- [x] Run `cargo check -p ostool`。
+
+当前完成记录（2026-05-14）：
+
+- `ostool/src/tool.rs` 和 `ostool/src/ctx.rs` 已删除。
+- `lib.rs` 不再 re-export `Tool` / `ToolConfig` / `ManifestContext` / `ostool::ctx`。
+- `OutputArtifacts` 已迁移到 `artifact/state.rs`，不作为旧 `ctx` public API 暴露。
+- `public_api` trybuild 已改为 `InvocationOptions`、模块函数和 runner options 的新 API。
+- `rg` 对旧 API 名称和跨模块 `impl Tool` 无命中；`rg -n "impl Invocation" ostool/src` 只剩 `invocation.rs` 内部实现。
 
 审查重点：
 
@@ -834,12 +852,25 @@ R1 按 R1a-R1i 保守切片执行。切片编号是执行顺序，不改变最�
 
 步骤：
 
-- [ ] Run `cargo fmt --all -- --check`。
-- [ ] Run `cargo check -p ostool`。
-- [ ] Run `cargo test -p ostool`。
-- [ ] 如果需要 Docker/CI-equivalent validation，使用 R0 Docker notes，不安装 host dependencies。
-- [ ] 更新 fork-only architecture plan 的 R1 completion note。
-- [ ] 记录任何无法运行的检查。
+- [x] Run `cargo fmt --all -- --check`。
+- [x] Run `cargo check -p ostool`。
+- [x] Run `cargo test -p ostool`。
+- [x] 如果需要 Docker/CI-equivalent validation，使用 R0 Docker notes，不安装 host dependencies。
+- [x] 更新 fork-only architecture plan 的 R1 completion note。
+- [x] 记录任何无法运行的检查。
+
+当前完成记录（2026-05-14）：
+
+- devbox host target 完整通过：
+  - `cargo fmt --all -- --check`
+  - `cargo clippy --all-features`
+  - `cargo build --all-features`
+  - `cargo test -- --nocapture`
+- 过程中补齐了三个 devbox 环境/生命周期护栏：
+  - `qemu_byte_stream` 显式使用 virtio MMIO network device，避免缺失 `efi-virtio.rom`。
+  - `session_ws_lifecycle` 测试关闭 builtin TFTP，避免 runtime drop 等待永久 blocking task。
+  - `uboot-shell` QEMU 测试加 `-net none`，避免默认网卡加载缺失 ROM。
+- 精确 CI target `x86_64-unknown-linux-gnu` 未在当前 aarch64 devbox 通过验证，因为缺少 x86_64 cross compiler/sysroot；需要 CI 或等价 x86 环境确认。
 
 审查重点：
 

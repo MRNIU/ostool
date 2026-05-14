@@ -1,3 +1,6 @@
+//! Public API compile checks for the invocation-based surface.
+
+/// Verifies supported public APIs compile and removed APIs stay rejected.
 #[test]
 fn public_api_matches_invocation_runtime_construction() {
     let t = trybuild::TestCases::new();

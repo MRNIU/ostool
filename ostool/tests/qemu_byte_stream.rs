@@ -1,3 +1,5 @@
+//! QEMU-backed byte-stream matcher integration tests.
+
 use std::{
     io::{ErrorKind, Read},
     net::TcpStream,
@@ -41,6 +43,7 @@ fn uboot_bin() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../assets/u-boot.bin")
 }
 
+/// Starts QEMU with U-Boot and returns a TCP serial stream.
 fn spawn_uboot_qemu() -> Result<(QemuGuard, TcpStream)> {
     let port = PORT.fetch_add(1, Ordering::SeqCst);
     let bin = uboot_bin();
@@ -189,6 +192,7 @@ fn run_case(success_patterns: &[&str], fail_patterns: &[&str]) -> Result<Option<
     }
 }
 
+/// Verifies a success regex can match before the newline is drained.
 #[test]
 fn qemu_byte_stream_success_matches_before_newline() -> Result<()> {
     let Some(outcome) = run_case(
@@ -216,6 +220,7 @@ fn qemu_byte_stream_success_matches_before_newline() -> Result<()> {
     Ok(())
 }
 
+/// Verifies a fail regex can match before the newline is drained.
 #[test]
 fn qemu_byte_stream_fail_matches_before_newline() -> Result<()> {
     let Some(outcome) = run_case(&[r"__ostool_never_success__"], &[r"BOOTP broadcast 1"])? else {
@@ -232,6 +237,7 @@ fn qemu_byte_stream_fail_matches_before_newline() -> Result<()> {
     Ok(())
 }
 
+/// Verifies fail matches take precedence when both regex sets match.
 #[test]
 fn qemu_byte_stream_fail_wins_when_both_match() -> Result<()> {
     let Some(outcome) = run_case(

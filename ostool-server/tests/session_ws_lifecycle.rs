@@ -1,3 +1,4 @@
+//! Integration tests for serial WebSocket session lifecycle and virtual power state.
 #![cfg(unix)]
 
 use std::{
@@ -99,6 +100,7 @@ fn sample_virtual_board(serial_port: String) -> BoardConfig {
     }
 }
 
+/// Starts an in-process ostool-server with one virtual board and PTY serial port.
 fn spawn_test_server(root: &Path, serial_port: String) -> Result<TestServerHandle> {
     let config_path = root.join("config.toml");
     let data_dir = root.join("data");
@@ -242,6 +244,7 @@ fn run_ws_lifecycle_case(mode: ClientShutdownMode) -> Result<()> {
     shutdown_result
 }
 
+/// Drives one client session through power-on, serial I/O, and release assertions.
 async fn run_client_flow(
     base_url: &str,
     mode: ClientShutdownMode,
@@ -432,6 +435,7 @@ where
     }
 }
 
+/// Reads the first binary payload from the serial WebSocket.
 async fn read_binary_payload<S>(websocket: &mut S) -> Result<Vec<u8>>
 where
     S: futures_util::Stream<
@@ -458,6 +462,7 @@ where
     }
 }
 
+/// Waits until the serial WebSocket reports closed or the connection closes.
 async fn wait_for_closed<S>(websocket: &mut S) -> Result<()>
 where
     S: futures_util::Stream<

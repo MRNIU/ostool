@@ -1,3 +1,5 @@
+//! Invocation state and compatibility helpers for one ostool CLI or library run.
+
 use std::path::{Path, PathBuf};
 
 use anyhow::anyhow;
@@ -31,6 +33,7 @@ pub struct InvocationOptions {
 }
 
 impl InvocationOptions {
+    /// Creates immutable invocation options from CLI or library inputs.
     pub fn new(
         manifest: Option<PathBuf>,
         build_dir: Option<PathBuf>,
@@ -45,18 +48,22 @@ impl InvocationOptions {
         }
     }
 
+    /// Returns the optional Cargo manifest path supplied by the caller.
     pub fn manifest(&self) -> Option<&Path> {
         self.manifest.as_deref()
     }
 
+    /// Returns the optional build output directory supplied by the caller.
     pub fn build_dir(&self) -> Option<&Path> {
         self.build_dir.as_deref()
     }
 
+    /// Returns the optional BIN output directory supplied by the caller.
     pub fn bin_dir(&self) -> Option<&Path> {
         self.bin_dir.as_deref()
     }
 
+    /// Returns whether debug-mode runtime artifacts should be preserved.
     pub fn debug(&self) -> bool {
         self.debug
     }
@@ -83,18 +90,22 @@ pub(crate) struct InvocationState {
 }
 
 impl InvocationState {
+    /// Returns the runtime context accumulated by the active invocation.
     pub(crate) fn runtime_context(&self) -> &RuntimeContext {
         &self.runtime_context
     }
 
+    /// Returns mutable runtime context for build and runner stages.
     pub(crate) fn runtime_context_mut(&mut self) -> &mut RuntimeContext {
         &mut self.runtime_context
     }
 
+    /// Returns the active build context captured from the current build config.
     pub(crate) fn active_build(&self) -> Option<&ActiveBuildContext> {
         self.active_build.as_ref()
     }
 
+    /// Replaces the active build context after config loading or sync.
     pub(crate) fn set_active_build(&mut self, active_build: Option<ActiveBuildContext>) {
         self.active_build = active_build;
     }
@@ -114,6 +125,7 @@ pub(crate) struct ActiveCargoBuild {
 }
 
 impl ActiveCargoBuild {
+    /// Creates active Cargo build metadata for package-scoped path expansion.
     pub fn new(package: String, bin: Option<String>, target: String) -> Self {
         Self {
             package,
@@ -122,6 +134,7 @@ impl ActiveCargoBuild {
         }
     }
 
+    /// Returns the Cargo package name associated with the active build.
     pub fn package(&self) -> &str {
         &self.package
     }
@@ -134,6 +147,7 @@ pub(crate) struct ActiveCustomBuild {
 }
 
 impl ActiveCustomBuild {
+    /// Creates active custom-build metadata for an explicit ELF path.
     pub fn new(elf_path: PathBuf, to_bin: bool) -> Self {
         Self { elf_path, to_bin }
     }
@@ -148,6 +162,7 @@ pub struct Invocation {
 }
 
 impl Invocation {
+    /// Resolves project layout and creates a fresh invocation state.
     pub fn new(options: InvocationOptions) -> anyhow::Result<Self> {
         let project_layout =
             crate::project::resolve_project_layout(options.manifest().map(PathBuf::from))?;
@@ -158,52 +173,64 @@ impl Invocation {
         })
     }
 
+    /// Returns immutable options for this invocation.
     pub fn options(&self) -> &InvocationOptions {
         &self.options
     }
 
+    /// Returns resolved Cargo manifest and workspace paths.
     pub fn project_layout(&self) -> &ProjectLayout {
         &self.project_layout
     }
 
+    /// Returns the mutable runtime state wrapper.
     pub(crate) fn state(&self) -> &InvocationState {
         &self.state
     }
 
+    /// Returns mutable access to the runtime state wrapper.
     pub(crate) fn state_mut(&mut self) -> &mut InvocationState {
         &mut self.state
     }
 
+    /// Consumes the invocation and returns its resolved project layout.
     pub fn into_project_layout(self) -> ProjectLayout {
         self.project_layout
     }
 
+    /// Returns the runtime context for compatibility with the old `ctx` call sites.
     pub(crate) fn ctx(&self) -> &RuntimeContext {
         self.state.runtime_context()
     }
 
+    /// Returns mutable runtime context for compatibility with old `ctx` call sites.
     pub(crate) fn ctx_mut(&mut self) -> &mut RuntimeContext {
         self.state.runtime_context_mut()
     }
 
+    /// Stores the build config path used by the active invocation.
     pub(crate) fn set_build_config_path(&mut self, path: Option<PathBuf>) {
         self.ctx_mut().build_config_path = path;
     }
 
+    /// Returns whether this invocation should keep debug runtime artifacts.
     pub(crate) fn debug_enabled(&self) -> bool {
         self.options.debug()
     }
 
+    /// Updates debug artifact behavior for paths that load it after initialization.
     pub(crate) fn set_debug_enabled(&mut self, debug: bool) {
         self.options.debug = debug;
     }
 
+    /// Mirrors a Cargo build config into runtime state for variable expansion.
     pub(crate) fn sync_cargo_context(&mut self, cargo: &Cargo) {
         self.set_build_config(BuildConfig {
             system: BuildSystem::Cargo(cargo.clone()),
         });
     }
 
+    /// Stores the build config and derives the active build context from it.
     pub fn set_build_config(&mut self, build_config: BuildConfig) {
         let active_build = match &build_config.system {
             BuildSystem::Cargo(cargo) => Some(ActiveBuildContext::Cargo(ActiveCargoBuild::new(
@@ -219,14 +246,17 @@ impl Invocation {
         self.state_mut().set_active_build(active_build);
     }
 
+    /// Returns the package manifest directory used as the invocation workdir.
     pub fn manifest_dir(&self) -> &PathBuf {
         self.project_layout.manifest_dir()
     }
 
+    /// Returns the Cargo workspace root resolved from metadata.
     pub fn workspace_dir(&self) -> &PathBuf {
         self.project_layout.workspace_dir()
     }
 
+    /// Returns the resolved build directory, defaulting to `target` under the package.
     pub fn build_dir(&self) -> PathBuf {
         self.options
             .build_dir()
@@ -234,10 +264,12 @@ impl Invocation {
             .unwrap_or_else(|| self.manifest_dir().join("target"))
     }
 
+    /// Returns the resolved BIN directory when one was supplied.
     pub fn bin_dir(&self) -> Option<PathBuf> {
         self.options.bin_dir().map(|dir| self.resolve_dir(dir))
     }
 
+    /// Resolves relative invocation directories against the manifest directory.
     fn resolve_dir(&self, dir: &Path) -> PathBuf {
         if dir.is_relative() {
             self.manifest_dir().join(dir)
@@ -246,22 +278,27 @@ impl Invocation {
         }
     }
 
+    /// Runs a shell hook command with invocation variables expanded.
     pub(crate) fn shell_run_cmd(&self, cmd: &str) -> anyhow::Result<()> {
         crate::process::shell_run_cmd(&self.process_context(), cmd)
     }
 
+    /// Builds a process command rooted in this invocation.
     pub(crate) fn command(&self, program: &str) -> crate::utils::Command {
         crate::process::command(program, &self.process_context())
     }
 
+    /// Loads Cargo metadata for the resolved project layout.
     pub(crate) fn metadata(&self) -> anyhow::Result<Metadata> {
         metadata::cargo_metadata(self.project_layout())
     }
 
+    /// Resolves a Cargo package's manifest directory for package-scoped variables.
     pub(crate) fn resolve_package_manifest_dir(&self, package: &str) -> anyhow::Result<PathBuf> {
         metadata::package_manifest_dir(self.project_layout(), package)
     }
 
+    /// Prepares an explicit ELF file and updates runtime artifact state.
     pub(crate) async fn prepare_elf_artifact(
         &mut self,
         path: PathBuf,
@@ -278,6 +315,7 @@ impl Invocation {
         Ok(())
     }
 
+    /// Converts the current ELF artifact to a BIN file and updates state.
     pub(crate) fn objcopy_output_bin(&mut self) -> anyhow::Result<PathBuf> {
         let mut prepared = self.prepared_runtime_artifacts_from_context()?;
         let bin_path = objcopy_output_bin(
@@ -289,6 +327,7 @@ impl Invocation {
         Ok(bin_path)
     }
 
+    /// Applies a Cargo build outcome as runtime artifact state.
     pub(crate) async fn apply_cargo_build_outcome(
         &mut self,
         outcome: &CargoBuildOutcome,
@@ -305,10 +344,12 @@ impl Invocation {
         Ok(())
     }
 
+    /// Resolves the build config path from explicit input or workspace default.
     pub(crate) fn resolve_build_config_path(&self, explicit_path: Option<PathBuf>) -> PathBuf {
         crate::build::config_loader::resolve_build_config_path(self.project_layout(), explicit_path)
     }
 
+    /// Loads build config, runs menu hooks when requested, and stores active state.
     pub(crate) async fn prepare_build_config(
         &mut self,
         config_path: Option<PathBuf>,
@@ -325,14 +366,17 @@ impl Invocation {
         Ok(loaded.config)
     }
 
+    /// Expands ostool placeholders in a string using invocation variable scope.
     pub(crate) fn replace_string(&self, input: &str) -> anyhow::Result<String> {
         crate::project::variables::expand_variables(input, &self.variable_scope())
     }
 
+    /// Expands ostool placeholders in a filesystem path.
     pub(crate) fn replace_path_variables(&self, path: PathBuf) -> anyhow::Result<PathBuf> {
         crate::project::variables::expand_path_variables(path, &self.variable_scope())
     }
 
+    /// Chooses the package root used when expanding package-scoped variables.
     fn package_root_for_variables(&self) -> anyhow::Result<PathBuf> {
         if let Some(ActiveBuildContext::Cargo(cargo)) = self.state().active_build() {
             return self.resolve_package_manifest_dir(cargo.package());
@@ -348,6 +392,7 @@ impl Invocation {
         Ok(self.manifest_dir().to_path_buf())
     }
 
+    /// Builds the variable scope used by config, hooks, and commands.
     pub(crate) fn variable_scope(&self) -> VariableScope {
         let package_dir = self
             .package_root_for_variables()
@@ -355,6 +400,7 @@ impl Invocation {
         VariableScope::for_package(self.project_layout(), package_dir)
     }
 
+    /// Creates process execution context from invocation layout and artifact state.
     pub(crate) fn process_context(&self) -> ProcessContext {
         ProcessContext::new(
             self.manifest_dir().to_path_buf(),
@@ -364,6 +410,7 @@ impl Invocation {
         )
     }
 
+    /// Converts invocation options into artifact-preparation options.
     fn runtime_artifact_options(&self) -> RuntimeArtifactOptions {
         RuntimeArtifactOptions {
             bin_dir: self.bin_dir(),
@@ -371,6 +418,7 @@ impl Invocation {
         }
     }
 
+    /// Reconstructs prepared artifact state from the active runtime context.
     fn prepared_runtime_artifacts_from_context(&self) -> anyhow::Result<PreparedRuntimeArtifacts> {
         Ok(PreparedRuntimeArtifacts::new(
             self.ctx().artifacts.clone(),
@@ -380,11 +428,13 @@ impl Invocation {
         ))
     }
 
+    /// Writes prepared artifact paths and architecture back into runtime state.
     fn apply_prepared_runtime_artifacts(&mut self, prepared: PreparedRuntimeArtifacts) {
         self.ctx_mut().arch = Some(prepared.arch());
         self.ctx_mut().artifacts = prepared.artifacts().clone();
     }
 
+    /// Returns UI hooks bound to the resolved project layout.
     pub(crate) fn ui_hooks(&self) -> Vec<ElementHook> {
         crate::build::config_hooks::ui_hooks(self.project_layout())
     }

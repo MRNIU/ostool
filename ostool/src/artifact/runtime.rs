@@ -1,3 +1,5 @@
+//! Runtime artifact preparation and conversion for built or supplied ELF files.
+
 use std::path::PathBuf;
 
 use anyhow::{Context, anyhow};
@@ -23,19 +25,23 @@ pub(crate) struct PreparedRuntimeArtifacts {
 }
 
 impl PreparedRuntimeArtifacts {
+    /// Creates a prepared runtime artifact bundle with its detected architecture.
     pub(crate) fn new(artifacts: OutputArtifacts, arch: Architecture) -> Self {
         Self { artifacts, arch }
     }
 
+    /// Returns the output artifact paths associated with this prepared bundle.
     pub(crate) fn artifacts(&self) -> &OutputArtifacts {
         &self.artifacts
     }
 
+    /// Returns the architecture detected from the prepared ELF file.
     pub(crate) fn arch(&self) -> Architecture {
         self.arch
     }
 }
 
+/// Records an existing ELF path without running conversion tools.
 pub(crate) async fn record_elf_artifact(path: PathBuf) -> anyhow::Result<PreparedRuntimeArtifacts> {
     let path = path
         .canonicalize()
@@ -57,6 +63,7 @@ pub(crate) async fn record_elf_artifact(path: PathBuf) -> anyhow::Result<Prepare
     ))
 }
 
+/// Records Cargo JSON build output as the active runtime artifact state.
 pub(crate) async fn record_cargo_build_outcome(
     outcome: &CargoBuildOutcome,
 ) -> anyhow::Result<PreparedRuntimeArtifacts> {
@@ -66,6 +73,7 @@ pub(crate) async fn record_cargo_build_outcome(
     Ok(prepared)
 }
 
+/// Prepares a Cargo build outcome and optionally converts its ELF to a BIN file.
 pub(crate) async fn prepare_cargo_build_outcome(
     outcome: &CargoBuildOutcome,
     to_bin: bool,
@@ -79,6 +87,7 @@ pub(crate) async fn prepare_cargo_build_outcome(
     Ok(prepared)
 }
 
+/// Prepares a user-provided ELF file, including strip and optional BIN conversion.
 pub(crate) async fn prepare_custom_elf_artifact(
     path: PathBuf,
     to_bin: bool,
@@ -93,6 +102,7 @@ pub(crate) async fn prepare_custom_elf_artifact(
     Ok(prepared)
 }
 
+/// Produces the stripped ELF artifact used by custom runtime flows.
 pub(crate) fn objcopy_elf(
     prepared: &mut PreparedRuntimeArtifacts,
     process: &ProcessContext,
@@ -142,6 +152,7 @@ pub(crate) fn objcopy_elf(
     Ok(stripped_elf_path)
 }
 
+/// Converts the prepared ELF artifact to a binary image when a runner needs one.
 pub(crate) fn objcopy_output_bin(
     prepared: &mut PreparedRuntimeArtifacts,
     options: &RuntimeArtifactOptions,
@@ -207,6 +218,7 @@ pub(crate) fn objcopy_output_bin(
     Ok(bin_path)
 }
 
+/// Reads an ELF file and returns the architecture reported by the object parser.
 async fn detect_architecture(path: &PathBuf) -> anyhow::Result<Architecture> {
     let binary_data = fs::read(path)
         .await

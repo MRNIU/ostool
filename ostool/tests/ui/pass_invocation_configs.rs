@@ -1,3 +1,5 @@
+//! Trybuild fixture covering the supported invocation-based public API.
+
 use ostool::{
     Invocation, InvocationOptions, board,
     build::{self, config::{BuildConfig, Cargo}},
@@ -7,6 +9,7 @@ use ostool::{
     },
 };
 
+/// Exercises supported public configuration and runner construction calls.
 fn main() {
     let invocation = Invocation::new(InvocationOptions::default()).unwrap();
     let _: BuildConfig = build::default_build_config();

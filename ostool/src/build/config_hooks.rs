@@ -1,3 +1,5 @@
+//! Interactive build-config hooks for selecting Cargo packages, features, and targets.
+
 use std::{path::Path, process::Command, sync::Arc};
 
 use anyhow::{Context, anyhow, bail};
@@ -8,6 +10,7 @@ use jkconfig::data::{
 
 use crate::project::ProjectLayout;
 
+/// Builds the set of UI hooks used by the build config editor.
 pub(crate) fn ui_hooks(layout: &ProjectLayout) -> Vec<ElementHook> {
     vec![
         ui_hook_feature_select(layout),
@@ -16,6 +19,7 @@ pub(crate) fn ui_hooks(layout: &ProjectLayout) -> Vec<ElementHook> {
     ]
 }
 
+/// Creates the multi-select hook for Cargo feature values.
 fn ui_hook_feature_select(layout: &ProjectLayout) -> ElementHook {
     let path = "system.features";
     let cargo_toml = layout.workspace_dir().join("Cargo.toml");
@@ -58,6 +62,7 @@ fn ui_hook_feature_select(layout: &ProjectLayout) -> ElementHook {
     }
 }
 
+/// Creates the single-select hook for Cargo package values.
 fn ui_hook_package_select(layout: &ProjectLayout) -> ElementHook {
     let path = "system.package";
     let cargo_toml = layout.workspace_dir().join("Cargo.toml");
@@ -93,6 +98,7 @@ fn ui_hook_package_select(layout: &ProjectLayout) -> ElementHook {
     }
 }
 
+/// Creates the single-select hook for target triples.
 fn ui_hook_target_select(layout: &ProjectLayout) -> ElementHook {
     let path = "system.target";
     let cargo_toml = layout.workspace_dir().join("Cargo.toml");
@@ -160,6 +166,7 @@ pub(crate) enum TargetCandidateSet<'a> {
     Rustup(&'a [RustupTargetOption]),
 }
 
+/// Returns rustup target candidates when package metadata has no docs.rs targets.
 fn fallback_rustup_targets() -> anyhow::Result<(Vec<HookOption>, String)> {
     let rustup_targets = collect_rustup_targets()?;
     if rustup_targets.is_empty() {
@@ -171,6 +178,7 @@ fn fallback_rustup_targets() -> anyhow::Result<(Vec<HookOption>, String)> {
     ))
 }
 
+/// Collects package and dependency feature names for config UI selection.
 pub(crate) fn collect_feature_options(
     manifest_path: &Path,
     package_name: &str,
@@ -222,6 +230,7 @@ pub(crate) fn collect_feature_options(
     Ok(features)
 }
 
+/// Reads `package.metadata.docs.rs` target declarations for one package.
 pub(crate) fn collect_package_doc_targets(
     manifest_path: &Path,
     package_name: &str,
@@ -250,6 +259,7 @@ pub(crate) fn collect_package_doc_targets(
     parse_docs_rs_targets(&pkg.metadata)
 }
 
+/// Parses docs.rs target metadata into an ordered target list.
 fn parse_docs_rs_targets(metadata: &serde_json::Value) -> anyhow::Result<Option<Vec<String>>> {
     let Some(docs) = metadata.get("docs") else {
         return Ok(None);
@@ -315,6 +325,7 @@ fn parse_docs_rs_targets(metadata: &serde_json::Value) -> anyhow::Result<Option<
     }
 }
 
+/// Runs `rustup target list` and parses installed targets before available ones.
 fn collect_rustup_targets() -> anyhow::Result<Vec<RustupTargetOption>> {
     let output = Command::new("rustup")
         .args(["target", "list"])
@@ -335,6 +346,7 @@ fn collect_rustup_targets() -> anyhow::Result<Vec<RustupTargetOption>> {
     Ok(parse_rustup_targets(&stdout))
 }
 
+/// Parses `rustup target list` output into ordered target options.
 pub(crate) fn parse_rustup_targets(output: &str) -> Vec<RustupTargetOption> {
     let mut installed = Vec::new();
     let mut available = Vec::new();
@@ -369,6 +381,7 @@ pub(crate) fn parse_rustup_targets(output: &str) -> Vec<RustupTargetOption> {
     installed
 }
 
+/// Converts target candidates into jkconfig hook options.
 pub(crate) fn build_target_options(candidates: TargetCandidateSet<'_>) -> Vec<HookOption> {
     match candidates {
         TargetCandidateSet::DocsRs(targets) => targets

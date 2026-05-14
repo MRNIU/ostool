@@ -1,3 +1,5 @@
+//! Board-run configuration loading, normalization, and CLI override handling.
+
 use std::{env::current_dir, path::PathBuf};
 
 use anyhow::Context as _;
@@ -34,6 +36,7 @@ impl BoardRunConfig {
         }
     }
 
+    /// Loads a board config through jkconfig and normalizes expanded values.
     pub(crate) async fn load_or_create(
         tool: &Invocation,
         explicit_path: Option<PathBuf>,
@@ -48,6 +51,7 @@ impl BoardRunConfig {
         Ok(config)
     }
 
+    /// Reads a board config from an explicit path without invoking the editor.
     pub(crate) fn read_from_path(tool: &Invocation, path: PathBuf) -> anyhow::Result<Self> {
         let mut config: Self = toml::from_str(
             &std::fs::read_to_string(&path)
@@ -59,6 +63,7 @@ impl BoardRunConfig {
         Ok(config)
     }
 
+    /// Resolves server and port precedence across CLI, local config, and global config.
     pub(crate) fn resolve_server(
         &self,
         cli_server: Option<&str>,
@@ -73,6 +78,7 @@ impl BoardRunConfig {
         (server, port)
     }
 
+    /// Applies CLI board/server/port overrides after variable expansion.
     pub(crate) fn apply_overrides(
         &mut self,
         tool: &Invocation,
@@ -103,6 +109,7 @@ impl BoardRunConfig {
         self.normalize("board run arguments")
     }
 
+    /// Expands ostool placeholders in all string-bearing config fields.
     fn replace_strings(&mut self, tool: &Invocation) -> anyhow::Result<()> {
         self.board_type = tool.replace_string(&self.board_type)?;
         self.dtb_file = self
@@ -148,6 +155,7 @@ impl BoardRunConfig {
         Ok(())
     }
 
+    /// Trims board config fields and validates required runtime inputs.
     fn normalize(&mut self, config_name: &str) -> anyhow::Result<()> {
         self.board_type = self.board_type.trim().to_string();
         if let Some(dtb_file) = self.dtb_file.as_mut() {
@@ -243,6 +251,7 @@ port = 9000
         );
     }
 
+    /// Verifies CLI overrides are expanded, trimmed, and normalized.
     #[test]
     fn board_run_config_apply_overrides_replaces_board_type_and_server() {
         let mut config: BoardRunConfig = toml::from_str(
@@ -264,6 +273,7 @@ port = 9000
         assert_eq!(config.port, Some(7000));
     }
 
+    /// Verifies direct path reads normalize shell fields from disk.
     #[tokio::test]
     async fn read_board_run_config_from_path_normalizes_loaded_values() {
         let tmp = tempfile::tempdir().unwrap();
@@ -303,6 +313,7 @@ timeout = 8
         assert_eq!(config.timeout, Some(8));
     }
 
+    /// Verifies package-scoped placeholders expand against the active Cargo package.
     #[tokio::test]
     async fn ensure_board_run_config_in_dir_replaces_package_variables() {
         let tmp = tempfile::tempdir().unwrap();

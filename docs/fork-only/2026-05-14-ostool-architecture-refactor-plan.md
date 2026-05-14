@@ -18,6 +18,9 @@
 - 每个重构 PR 都要能独立 review，且优先用现有单元测试和最小 contract test 证明行为等价或
   证明旧接口到新接口的迁移关系。
 - 不要求贡献者在 macOS 宿主机安装额外工具；验证优先使用仓库 CI、Docker 或 Dev Container。
+- R1 有一个明确例外：`Tool`、`ToolConfig`、`ManifestContext`、`AppContext`、`OutputArtifacts`
+  和 `ostool::ctx` 这组 Rust library 入口在本 fork-side 重构中按内部 API 处理，可以一次性改名
+  或移除。CLI、配置格式和 runtime 行为仍然是硬兼容 contract。
 
 ## 接口兼容与废弃策略
 
@@ -47,13 +50,14 @@ README、配置示例、解析提示或 warning 说明，不要静默改变含�
 | 阶段 | 阶段文档 | 加载时机 |
 |---|---|---|
 | R0 | `docs/fork-only/2026-05-14-ostool-r0-contract-baseline.md` | 开始任何代码移动前；需要确认现有行为边界或 Docker 验证基线时 |
-| R1-R6 | 暂留在本文档 | 对应阶段开始前，如果细节继续膨胀，再拆出独立阶段文档 |
+| R1 | `docs/fork-only/2026-05-14-ostool-r1-invocation-architecture-plan.md` | 开始移除 `Tool` 中心化架构前；需要确认目录结构、命名、任务拆分或 review 维度时 |
+| R2-R6 | 暂留在本文档 | 对应阶段开始前，如果细节继续膨胀，再拆出独立阶段文档 |
 
 ## 当前主要架构问题
 
 | 编号 | 位置 | 问题 | 影响 | 先修动作 |
 |---|---|---|---|---|
-| A1 | `ostool/src/tool.rs` | `Tool` 文件同时承载门面、manifest、命令执行、artifact、build config、变量替换、menuconfig hooks | 后续 debug artifacts、object tools、boot artifacts 继续加入会让核心文件不可维护 | R1 |
+| A1 | `ostool/src/tool.rs`、跨模块 `impl Tool` | `Tool` 同时承担项目布局、调用选项、运行态状态、命令执行、artifact、build config、变量替换、menuconfig hooks 和 runner 门面 | 后续 debug artifacts、object tools、boot artifacts 继续加入会让 `Tool` 成为不可控业务中心；单纯拆文件无法解决语义塌缩 | R1 |
 | A2 | `ostool/src/ctx.rs` | `OutputArtifacts` 只有 `elf`、`bin`、`cargo_artifact_dir`、`runtime_artifact_dir`，没有区分 Cargo 原始产物、runner 消费产物和调试产物 | PR-03 容易把 `.disassembly/.elf_info/.nm` 混进 runtime `.bin` 语义 | R2 |
 | A3 | `ostool/src/tool.rs` 与 `ostool/src/build/cargo_builder.rs` | someboot 自动参数在 build config 准备和 Cargo command 构造阶段都有注入入口 | 责任边界不清，未来引入 build plan 后容易重复追加参数 | R2 |
 | A4 | `ostool/src/build/cargo_builder.rs` | `CargoBuilder::execute()` 串起 pre hook、Cargo JSON 解析、artifact 选择、runtime objcopy、post hook | build lifecycle 缺少可复用阶段，debug artifact pipeline 只能硬插 | R2 |
@@ -66,7 +70,7 @@ README、配置示例、解析提示或 warning 说明，不要静默改变含�
 
 ```mermaid
 graph TD
-    R0["R0 architecture baseline"] --> R1["R1 Tool module split"]
+    R0["R0 architecture baseline"] --> R1["R1 Invocation architecture"]
     R1 --> R2["R2 artifact lifecycle boundary"]
     R2 --> R3["R3 FIT generator extraction"]
     R3 --> R4["R4 boot artifact staging boundary"]
@@ -79,7 +83,7 @@ graph TD
 | 顺序 | 建议分支名 | 重量 | 类型 | 主要内容 | 解锁的新特性 |
 |---|---|---|---|---|---|
 | R0 | `feature/architecture-baseline` | 轻 | 文档/测试基线 | 固化现有 build/run/board 行为边界和需要保留的 contract | 后续全部重构 |
-| R1 | `feature/tool-module-split` | 轻到中 | 纯结构 | 拆分 `tool.rs` 职责，不改行为 | F03 debug artifacts |
+| R1 | `feature/invocation-architecture` | 中到重 | 结构/API 重置 | 移除 `Tool` 中心化架构，引入 `ProjectLayout`、`Invocation`、`InvocationState` 和显式服务边界 | F03 debug artifacts |
 | R2 | `feature/artifact-lifecycle-boundary` | 中 | 结构/状态模型 | 明确 Cargo artifact、runtime artifact、debug artifact 边界；收敛 someboot 参数注入责任 | F03 debug artifacts |
 | R3 | `feature/fit-generator-extract` | 中 | 结构/服务抽取 | 从 U-Boot runner 抽出 FIT 生成服务 | F04 FIT config |
 | R4 | `feature/boot-artifact-staging` | 中 | 结构/流水线边界 | 抽出 prepare-only boot artifacts staging 边界 | F05 boot artifact pipeline |
@@ -123,61 +127,46 @@ R0 复核后的关键修正：
 - 无法在本机或 CI 复现的硬件/board-server 行为，要明确写成“未验证，需要真实环境验证”，不能用
   host-only 测试替代真实证明。
 
-## R1：拆分 `Tool` 内部模块
+## R1：Invocation architecture
 
-目标：把 `ostool/src/tool.rs` 从大文件拆成内部模块，只移动代码，不改变行为。
+目标：移除 `Tool` 中心化架构，而不是把 `tool.rs` 机械拆成多个继续围绕 `impl Tool` 膨胀的小文件。
 
-建议文件布局：
+R1 的详细目录结构、命名、分阶段任务和多维 review 清单见：
+`docs/fork-only/2026-05-14-ostool-r1-invocation-architecture-plan.md`。
 
-- 保留：`ostool/src/tool.rs`
-  - `ToolConfig`
-  - `Tool`
-  - `ManifestContext`
-  - `Tool::new()`
-  - `ctx()`、`ctx_mut()`、`into_context()`
-  - 对外 re-export 或内部模块挂载
-- 新增：`ostool/src/tool/manifest.rs`
-  - `resolve_manifest_context()`
-  - manifest path 解析
-  - `metadata()`
-  - `resolve_package_manifest_dir()`
-- 新增：`ostool/src/tool/command.rs`
-  - `command()`
-  - `shell_run_cmd()`
-- 新增：`ostool/src/tool/artifacts.rs`
-  - `set_elf_artifact_path()`
-  - `prepare_elf_artifact()`
-  - `objcopy_elf()`
-  - `objcopy_output_bin()`
-- 新增：`ostool/src/tool/build_config.rs`
-  - `resolve_build_config_path()`
-  - `prepare_build_config()`
-  - 当前 someboot 参数注入逻辑先原样迁移，不在 R1 改语义
-- 新增：`ostool/src/tool/variables.rs`
-  - `replace_value()`
-  - `replace_string()`
-  - `replace_path_variables()`
-  - `package_root_for_variables()`
-- 新增：`ostool/src/tool/config_hooks.rs`
-  - `ui_hooks()`
-  - feature/package/target select hooks
-  - `collect_feature_options()`
-  - `collect_package_doc_targets()`
-  - `collect_rustup_targets()`
+R1 的核心模型：
+
+- `ProjectLayout`：只读项目路径事实，替代 `ManifestContext` 的语义。
+- `InvocationOptions`：一次命令调用的静态选项。
+- `InvocationState`：一次命令调用的可变状态，替代 `AppContext` 的语义；字段保持私有。
+- `Invocation`：一次 OSTool 调用的组合对象，只拥有 layout/options/state，不承载业务逻辑；字段保持私有，
+  只暴露窄访问器。
+- `ActiveBuildContext` / `VariableScope`：CLI 覆盖后的 build/package 单一真相源，避免 `${package}`
+  从过期的 `BuildConfig` 副本推导。
+- 变量替换 helper、`RuntimeArtifactPreparer`、`BuildConfigLoader`、`CargoBuildPipeline`、
+  `QemuRunner`、`UbootRunner`、`BoardRunner` 以及必要的模块级函数：明确职责边界；没有实际状态或
+  测试 seam 时，优先用 Rust 模块函数，不强行创建空壳 service/factory 对象。
 
 明确不做：
 
 - 不新增 `debug_artifacts` 配置。
 - 不调用 `rust-objdump`、`rust-readobj`、`rust-nm`。
 - 不修改 `to_bin` 语义。
-- 不重写 `Tool` 公开 API。
+- 不改变 Cargo artifact 选择规则。
+- 不改变 someboot 自动参数语义；重复注入风险留到 R2 收敛。
+- 不改变 QEMU、U-Boot、board、serial、TFTP 或电源管理副作用。
 
 验收：
 
+- `Tool`、`ToolConfig`、`ManifestContext`、`AppContext` 不再是核心模型名。
+- `OutputArtifacts` / `ostool::ctx` 的 Rust API 破坏边界被明确记录，除非后续为了上游兼容保留 re-export。
+- 不再有跨模块 `impl Tool`。
+- `Invocation`、`ProjectLayout`、`InvocationState` 字段私有，业务模块不把完整 `Invocation` 当新 `Tool` 传递。
+- Cargo executable resolution 与 runtime `.elf` / `.bin` preparation 解耦。
+- `ostool build`、`ostool run qemu`、`ostool run uboot`、`ostool board run`、`cargo-osrun`
+  和现有配置入口保持不变。
 - `cargo test -p ostool`
 - `cargo check -p ostool`
-- 现有 `ostool build`、`ostool run qemu`、`ostool run uboot`、`ostool board run`
-  配置入口保持不变。
 
 ## R2：artifact 生命周期和 object-tools 边界
 
@@ -185,7 +174,7 @@ R0 复核后的关键修正：
 
 建议修改：
 
-- 在 `ostool/src/ctx.rs` 中重新整理 artifact 状态，至少区分：
+- 在 `ostool/src/artifact/state.rs` 中重新整理 artifact 状态，至少区分：
   - Cargo 原始 executable artifact。
   - runner 当前消费的 ELF/BIN。
   - runtime artifact directory。

@@ -5,7 +5,7 @@
 
 ## 目标
 
-- 在 R1 拆 `Tool` 文件前，区分硬兼容、可废弃、内部实现和文档漂移。
+- 在 R1 移除 `Tool` 中心化架构前，区分硬兼容、可废弃、内部实现和文档漂移。
 - 用当前 CI 命令建立 Docker 验证基线，避免只靠静态阅读做结论。
 - 记录真实缺口：哪些已有测试覆盖，哪些只能在后续阶段先抽 seam 再补 contract test。
 
@@ -96,7 +96,7 @@ cargo test --target x86_64-unknown-linux-gnu -- --nocapture
 | 变量替换 | 硬兼容 + 文档漂移 | 代码支持 `${workspace}`、`${workspaceFolder}`、`${package}`、`${tmpDir}`、`${env:VAR}`；环境变量不存在时替换为空字符串 | `tool.rs` 已有 workspace/tmpDir/package 测试 | README 的 `${env:VAR:-default}` 是文档漂移，不是当前行为；应单独修文档或新增兼容功能 |
 | menuconfig hooks | 硬兼容 | build config 使用 package/features/target hooks；QEMU/U-Boot 配置通过 schema 写回 | 相关 helper 有单元测试 | R1 拆文件时保持 hooks 行为，不顺手重写交互逻辑 |
 | 输出匹配和 timeout | 硬兼容 | success/fail regex 编译后运行；默认 fail pattern 包含 panic/kernel panic；fail 优先；匹配后 drain；`timeout = None` 或 `0` 表示禁用 | `qemu_byte_stream` 用真实 QEMU 验证 byte-stream matcher 的换行前匹配和 fail 优先 | R6 前保持返回语义；R6 再抽 execution result |
-| public API | 软兼容/可废弃 | `src/lib.rs` 公开 `build`、`board`、`ctx`、`logger`、`menuconfig`、`run`、`sterm`、`utils`，并 re-export `Tool`、`ToolConfig`、`ManifestContext`、`resolve_manifest_context` | `ostool/tests/public_api.rs` + trybuild 覆盖部分工具构造和 runner config | public surface 比主计划示例更宽；改名或改语义前先 deprecated |
+| public API | 软兼容/可废弃；R1 对 `Tool` 组有批准例外 | `src/lib.rs` 公开 `build`、`board`、`ctx`、`logger`、`menuconfig`、`run`、`sterm`、`utils`，并 re-export `Tool`、`ToolConfig`、`ManifestContext`、`resolve_manifest_context` | `ostool/tests/public_api.rs` + trybuild 覆盖部分工具构造和 runner config | R1 已把 `Tool`、`ToolConfig`、`ManifestContext`、`AppContext` 作为内部 API 重置；其它公开模块在改名或缩窄前仍需单独说明 |
 | README/文档 | 文档漂移 | README 中仍有与当前代码不一致的变量替换语法和 CLI 叙述 | 无 | R0 只标记漂移；不要把旧 README 文本当当前代码 contract |
 
 ## 查漏补缺结论
@@ -107,8 +107,9 @@ cargo test --target x86_64-unknown-linux-gnu -- --nocapture
 3. QEMU `-kernel`、UEFI、`dtb_dump` 的 contract 目前没有纯函数入口。不要在 R0 伪造字符串扫描测试；
    R5 第一笔先抽 command plan，再补可维护测试。
 4. `cargo-osrun` 是独立用户入口，不应被主 CLI parser 测试覆盖情况掩盖。
-5. public API 的真实边界比 `Tool` 相关 re-export 更大。R1 拆文件可以调整内部模块，但不能无迁移地
-   缩窄 `src/lib.rs` 当前公开模块。
+5. public API 的真实边界比 `Tool` 相关 re-export 更大。R1 可以重置 `Tool`、`ToolConfig`、
+   `ManifestContext`、`AppContext`，但不应顺手缩窄无关公开模块；如果准备上游 PR，需要在说明中
+   明确这是 Rust API 破坏性重构，或另行补兼容 wrapper。
 6. Docker 复核显示 CI 等价环境必须包含 Node/pnpm 和 QEMU/U-Boot 推荐依赖。缺这些依赖时的失败要记为
    环境问题，不能当作架构问题。
 7. 全量 `cargo test` 当前不是 clean baseline：`ostool-server` 的 abrupt WebSocket drop lifecycle
@@ -124,7 +125,8 @@ cargo test --target x86_64-unknown-linux-gnu -- --nocapture
 1. CLI parser：`build --config --package --bin`、`run qemu --config --qemu-config --debug --dtb-dump`、
    `run uboot --config --uboot-config`、全局 `--manifest`。
 2. `cargo-osrun` parser：默认 QEMU、`uboot` 子命令、`--to-bin`、`--no-run`、`--build-dir`、`--bin-dir`。
-3. public API trybuild：确认 `src/lib.rs` 当前公开模块和 `Tool` 相关 re-export 没有被 R1 拆文件缩窄。
+3. public API trybuild：确认 `Tool` 相关 re-export 的移除是有意变更，且 `src/lib.rs` 其它公开模块
+   没有被 R1 顺手缩窄。
 
 进入 R2 前建议优先补：
 

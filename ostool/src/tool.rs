@@ -8,16 +8,18 @@ use std::{
 
 use anyhow::{Context, anyhow, bail};
 use cargo_metadata::Metadata;
-use colored::Colorize;
 use jkconfig::data::{
     ElementHook, HookContext, HookFlow, HookOption, MessageLevel, MultiSelectBinding,
     MultiSelectSpec, SingleSelectBinding, SingleSelectSpec,
 };
-use object::Object;
-use tokio::fs;
 
 use crate::{
+    artifact::runtime::{
+        PreparedRuntimeArtifacts, RuntimeArtifactOptions, objcopy_output_bin,
+        prepare_cargo_build_outcome, prepare_custom_elf_artifact,
+    },
     build::{
+        artifact_selector::CargoBuildOutcome,
         config::{BuildConfig, BuildSystem, Cargo},
         someboot,
     },
@@ -25,7 +27,6 @@ use crate::{
     invocation::Invocation,
     process::ProcessContext,
     project::{ProjectLayout, metadata, resolve_project_layout, variables::VariableScope},
-    utils::PathResultExt,
 };
 
 /// Static configuration used to initialize a [`Tool`].
@@ -169,26 +170,10 @@ impl Tool {
     }
 
     /// Sets the ELF artifact path and synchronizes derived runtime metadata.
+    #[cfg(test)]
     pub(crate) async fn set_elf_artifact_path(&mut self, path: PathBuf) -> anyhow::Result<()> {
-        let path = path
-            .canonicalize()
-            .with_path("failed to canonicalize file", &path)?;
-        let artifact_dir = path
-            .parent()
-            .ok_or_else(|| anyhow!("invalid ELF file path: {}", path.display()))?
-            .to_path_buf();
-
-        self.ctx.artifacts.elf = Some(path.clone());
-        self.ctx.artifacts.bin = None;
-        self.ctx.artifacts.cargo_artifact_dir = Some(artifact_dir.clone());
-        self.ctx.artifacts.runtime_artifact_dir = Some(artifact_dir);
-
-        let binary_data = fs::read(&path)
-            .await
-            .with_path("failed to read ELF file", &path)?;
-        let file = object::File::parse(binary_data.as_slice())
-            .with_context(|| format!("failed to parse ELF file: {}", path.display()))?;
-        self.ctx.arch = Some(file.architecture());
+        let prepared = crate::artifact::runtime::record_elf_artifact(path).await?;
+        self.apply_prepared_runtime_artifacts(prepared);
         Ok(())
     }
 
@@ -199,129 +184,43 @@ impl Tool {
         path: PathBuf,
         to_bin: bool,
     ) -> anyhow::Result<()> {
-        self.set_elf_artifact_path(path).await?;
-        self.objcopy_elf()?;
-        if to_bin {
-            self.objcopy_output_bin()?;
-        }
+        let prepared = prepare_custom_elf_artifact(
+            path,
+            to_bin,
+            &self.runtime_artifact_options(),
+            &self.process_context(),
+        )
+        .await?;
+        self.apply_prepared_runtime_artifacts(prepared);
         Ok(())
-    }
-
-    /// Strips debug symbols from the ELF file.
-    pub(crate) fn objcopy_elf(&mut self) -> anyhow::Result<PathBuf> {
-        let elf_path = self
-            .ctx
-            .artifacts
-            .elf
-            .as_ref()
-            .ok_or_else(|| anyhow!("elf not exist"))?;
-        let elf_path = elf_path
-            .canonicalize()
-            .with_path("failed to canonicalize file", elf_path)?;
-
-        let stripped_elf_path = elf_path.with_file_name(
-            elf_path
-                .file_stem()
-                .ok_or_else(|| anyhow!("invalid ELF file path: {}", elf_path.display()))?
-                .to_string_lossy()
-                .to_string()
-                + ".elf",
-        );
-        println!(
-            "{}",
-            format!(
-                "Stripping ELF file...\r\n  original elf: {}\r\n  stripped elf: {}",
-                elf_path.display(),
-                stripped_elf_path.display()
-            )
-            .bold()
-            .purple()
-        );
-
-        let mut objcopy = self.command("rust-objcopy");
-        objcopy.arg(format!(
-            "--binary-architecture={}",
-            format!(
-                "{:?}",
-                self.ctx
-                    .arch
-                    .ok_or_else(|| anyhow!("architecture not detected"))?
-            )
-            .to_lowercase()
-        ));
-        objcopy.arg(&elf_path);
-        objcopy.arg(&stripped_elf_path);
-        objcopy.run()?;
-
-        self.ctx.artifacts.elf = Some(stripped_elf_path.clone());
-        self.ctx.artifacts.bin = None;
-        self.ctx.artifacts.cargo_artifact_dir = stripped_elf_path.parent().map(PathBuf::from);
-        self.ctx.artifacts.runtime_artifact_dir = stripped_elf_path.parent().map(PathBuf::from);
-
-        Ok(stripped_elf_path)
     }
 
     /// Converts the ELF file to raw binary format.
     pub(crate) fn objcopy_output_bin(&mut self) -> anyhow::Result<PathBuf> {
-        if let Some(bin) = &self.ctx.artifacts.bin {
-            debug!("BIN file already exists: {:?}", bin);
-            return Ok(bin.clone());
-        }
-
-        let elf_path = self
-            .ctx
-            .artifacts
-            .elf
-            .as_ref()
-            .ok_or_else(|| anyhow!("elf not exist"))?;
-        let elf_path = elf_path
-            .canonicalize()
-            .with_path("failed to canonicalize file", elf_path)?;
-
-        let bin_name = elf_path
-            .file_stem()
-            .ok_or_else(|| anyhow!("invalid ELF file path: {}", elf_path.display()))?
-            .to_string_lossy()
-            .to_string()
-            + ".bin";
-
-        let bin_path = if let Some(bin_dir) = self.bin_dir() {
-            bin_dir.join(bin_name)
-        } else {
-            elf_path.with_file_name(bin_name)
-        };
-
-        if let Some(parent) = bin_path.parent() {
-            std::fs::create_dir_all(parent).with_path("failed to create directory", parent)?;
-        }
-
-        println!(
-            "{}",
-            format!(
-                "Converting ELF to BIN format...\r\n  elf: {}\r\n  bin: {}",
-                elf_path.display(),
-                bin_path.display()
-            )
-            .bold()
-            .purple()
-        );
-
-        let mut objcopy = self.command("rust-objcopy");
-
-        if !self.debug_enabled() {
-            objcopy.arg("--strip-all");
-        }
-
-        objcopy
-            .arg("-O")
-            .arg("binary")
-            .arg(&elf_path)
-            .arg(&bin_path);
-        objcopy.run()?;
-
-        self.ctx.artifacts.bin = Some(bin_path.clone());
-        self.ctx.artifacts.runtime_artifact_dir = bin_path.parent().map(PathBuf::from);
+        let mut prepared = self.prepared_runtime_artifacts_from_context()?;
+        let bin_path = objcopy_output_bin(
+            &mut prepared,
+            &self.runtime_artifact_options(),
+            &self.process_context(),
+        )?;
+        self.apply_prepared_runtime_artifacts(prepared);
         Ok(bin_path)
+    }
+
+    pub(crate) async fn apply_cargo_build_outcome(
+        &mut self,
+        outcome: &CargoBuildOutcome,
+        to_bin: bool,
+    ) -> anyhow::Result<()> {
+        let prepared = prepare_cargo_build_outcome(
+            outcome,
+            to_bin,
+            &self.runtime_artifact_options(),
+            &self.process_context(),
+        )
+        .await?;
+        self.apply_prepared_runtime_artifacts(prepared);
+        Ok(())
     }
 
     pub(crate) fn resolve_build_config_path(&self, explicit_path: Option<PathBuf>) -> PathBuf {
@@ -405,6 +304,27 @@ impl Tool {
             self.variable_scope(),
             self.ctx.artifacts.elf.clone(),
         )
+    }
+
+    fn runtime_artifact_options(&self) -> RuntimeArtifactOptions {
+        RuntimeArtifactOptions {
+            bin_dir: self.bin_dir(),
+            debug: self.debug_enabled(),
+        }
+    }
+
+    fn prepared_runtime_artifacts_from_context(&self) -> anyhow::Result<PreparedRuntimeArtifacts> {
+        Ok(PreparedRuntimeArtifacts::new(
+            self.ctx.artifacts.clone(),
+            self.ctx
+                .arch
+                .ok_or_else(|| anyhow!("architecture not detected"))?,
+        ))
+    }
+
+    fn apply_prepared_runtime_artifacts(&mut self, prepared: PreparedRuntimeArtifacts) {
+        self.ctx.arch = Some(prepared.arch());
+        self.ctx.artifacts = prepared.artifacts().clone();
     }
 
     pub(crate) fn ui_hooks(&self) -> Vec<ElementHook> {

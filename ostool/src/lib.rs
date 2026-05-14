@@ -32,6 +32,9 @@
 
 #![cfg(not(target_os = "none"))]
 
+/// Runtime artifact state and preparation helpers.
+pub mod artifact;
+
 /// Build system configuration and Cargo integration.
 ///
 /// Provides functionality for configuring and executing Cargo builds

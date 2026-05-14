@@ -33,6 +33,7 @@ use crate::{
 };
 
 /// Cargo builder implementation for building projects.
+pub(crate) mod artifact_selector;
 mod cargo_builder;
 
 /// Build configuration types and structures.
@@ -160,7 +161,8 @@ impl Tool {
         self.sync_cargo_context(config);
         cargo_builder::CargoBuilder::build_auto(self, config)
             .execute()
-            .await
+            .await?;
+        Ok(())
     }
 
     pub(crate) async fn prepare_runtime_artifacts(
@@ -195,7 +197,8 @@ impl Tool {
             .skip_objcopy(true)
             .resolve_artifact_from_json(true)
             .execute()
-            .await
+            .await?;
+        Ok(())
     }
 
     /// Builds and runs the project using Cargo with the specified runner.

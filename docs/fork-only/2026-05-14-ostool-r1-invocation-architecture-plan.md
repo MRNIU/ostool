@@ -613,21 +613,21 @@ R1 按 R1a-R1i 保守切片执行。切片编号是执行顺序，不改变最�
 
 步骤：
 
-- [ ] 把 Cargo JSON executable selection 移到 `artifact_selector.rs`。
-- [ ] 定义 `ResolvedCargoArtifact` 和 `CargoBuildOutcome`。
-- [ ] 把 `CargoBuilder` lifecycle 改造成 `CargoBuildPipeline` 或 `run_cargo_build()`。
+- [x] 把 Cargo JSON executable selection 移到 `artifact_selector.rs`。
+- [x] 定义 `ResolvedCargoArtifact` 和 `CargoBuildOutcome`。
+- [x] 把 `CargoBuilder` lifecycle 改造成 `CargoBuildPipeline` 或 `run_cargo_build()`。
 - [ ] 如果 pipeline 不需要持有状态，优先使用 `run_cargo_build()` module function。
 - [ ] `CargoBuildPipeline` 或 `run_cargo_build()` 接收 `&ProjectLayout`、`&InvocationOptions`、`&ActiveCargoBuild` 和 `ProcessContext` 所需窄输入。
-- [ ] `CargoBuildPipeline` 返回 `CargoBuildOutcome`，不接收 `&mut InvocationState`。
-- [ ] 在 R1e 完成前保留一个过渡 adapter：`CargoBuildOutcome` 必须仍被写回旧 artifact state，且现有 runner 仍能看到与旧行为等价的 `elf`、`bin`、`cargo_artifact_dir`、`runtime_artifact_dir`。
-- [ ] 过渡 adapter 只服务旧状态同步，不把 runner、QEMU、U-Boot 或 board 逻辑塞回 build pipeline。
-- [ ] 保持 pre-build command execution order。
-- [ ] 保持 Cargo command arguments、features、`profile`、log feature、target dir、package、bin、extra config、`args` 和 message format。
-- [ ] 保持 post-build command execution order 和 `KERNEL_ELF` 注入语义。
-- [ ] 保持 current someboot argument behavior；R1 不修重复注入。
-- [ ] Run artifact selector tests。
-- [ ] Run `cargo test -p ostool public_api`。
-- [ ] Run `cargo check -p ostool`。
+- [x] `CargoBuildPipeline` 返回 `CargoBuildOutcome`，不接收 `&mut InvocationState`。
+- [x] 在 R1e 完成前保留一个过渡 adapter：`CargoBuildOutcome` 必须仍被写回旧 artifact state，且现有 runner 仍能看到与旧行为等价的 `elf`、`bin`、`cargo_artifact_dir`、`runtime_artifact_dir`。
+- [x] 过渡 adapter 只服务旧状态同步，不把 runner、QEMU、U-Boot 或 board 逻辑塞回 build pipeline。
+- [x] 保持 pre-build command execution order。
+- [x] 保持 Cargo command arguments、features、`profile`、log feature、target dir、package、bin、extra config、`args` 和 message format。
+- [x] 保持 post-build command execution order 和 `KERNEL_ELF` 注入语义。
+- [x] 保持 current someboot argument behavior；R1 不修重复注入。
+- [x] Run artifact selector tests。
+- [x] Run `cargo test -p ostool public_api`。
+- [x] Run `cargo check -p ostool`。
 
 审查重点：
 
@@ -660,22 +660,34 @@ R1 按 R1a-R1i 保守切片执行。切片编号是执行顺序，不改变最�
 步骤：
 
 - [ ] 把 `OutputArtifacts` 移到 `artifact/state.rs`。
-- [ ] 定义 `PreparedRuntimeArtifacts`，保存 R1 仍需的旧字段语义。
-- [ ] 把 ELF canonicalization 和 arch detection 移到 runtime artifact helper。
-- [ ] 把 stripped `.elf` 和 optional `.bin` 生成移到 runtime artifact helper。
-- [ ] 只有 helper 需要持有 options、process context 或 cache 时，才保留 `RuntimeArtifactPreparer` struct；否则使用 module function。
-- [ ] 支持从 `CargoBuildOutcome` 准备 runtime artifact。
-- [ ] 支持从 custom ELF path 准备 runtime artifact。
-- [ ] 删除或替换 R1d 的过渡 legacy runtime adapter，让 runtime conversion 只通过本任务的 helper 发生。
+- [x] 定义 `PreparedRuntimeArtifacts`，保存 R1 仍需的旧字段语义。
+- [x] 把 ELF canonicalization 和 arch detection 移到 runtime artifact helper。
+- [x] 把 stripped `.elf` 和 optional `.bin` 生成移到 runtime artifact helper。
+- [x] 只有 helper 需要持有 options、process context 或 cache 时，才保留 `RuntimeArtifactPreparer` struct；否则使用 module function。
+- [x] 支持从 `CargoBuildOutcome` 准备 runtime artifact。
+- [x] 支持从 custom ELF path 准备 runtime artifact。
+- [x] 删除或替换 R1d 的过渡 legacy runtime adapter，让 runtime conversion 只通过本任务的 helper 发生。
 - [ ] 替换 `Tool::prepare_elf_artifact`、`Tool::set_elf_artifact_path`、`Tool::objcopy_elf`、`Tool::objcopy_output_bin` call sites。
-- [ ] 保持当前 artifact 字段和更新行为：
+- [x] 保持当前 artifact 字段和更新行为：
   - `elf`
   - `bin`
   - `cargo_artifact_dir`
   - `runtime_artifact_dir`
 - [ ] orchestration 层把 `PreparedRuntimeArtifacts` 写入 `InvocationState`。
-- [ ] Run artifact unit tests。
-- [ ] Run `cargo check -p ostool`。
+- [x] Run artifact unit tests。
+- [x] Run `cargo check -p ostool`。
+
+当前完成记录（2026-05-14）：
+
+- Cargo executable selector 已移动到 `build/artifact_selector.rs`，选择规则测试随模块迁移。
+- `CargoBuilder::execute()` 已返回 `CargoBuildOutcome`；旧 state 写回通过兼容门面进入 runtime helper，不再在 build pipeline 里直接做 runtime conversion。
+- 新增 `artifact::runtime`，ELF canonicalization、arch detection、custom stripped `.elf` 和 optional `.bin` 生成都在 helper 内完成。
+- 仍保留 `Tool` 作为 runner/board 可见的旧 state 写回门面；`OutputArtifacts` 实体迁移和 `InvocationState` 写入留到 R1h 收口。
+- 已用 Docker `rust:1.90-bookworm` 验证：
+  - `cargo fmt --all -- --check`
+  - `cargo check -p ostool`
+  - `cargo test -p ostool --lib`
+  - `cargo test -p ostool public_api`
 
 审查重点：
 

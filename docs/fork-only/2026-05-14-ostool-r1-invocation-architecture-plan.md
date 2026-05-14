@@ -491,14 +491,14 @@ R1 按 R1a-R1i 保守切片执行。切片编号是执行顺序，不改变最�
 - [x] 补 global `--manifest` parser tests。
 - [x] 补 `cargo-osrun` parser tests：default QEMU、`uboot`、`--to-bin`、`--no-run`、`--build-dir`、`--bin-dir`。
 - [x] 补 Cargo artifact selector tests：显式 `bin`、package 同名 bin、`default-run`、single bin、多 bin ambiguity。
-- [ ] 补 variable replacement tests：`${workspace}`、`${workspaceFolder}`、`${package}`、`${tmpDir}`、`${env:VAR}`、missing env -> empty string。
-- [ ] 补 process context tests：workdir、`WORKSPACE_FOLDER`、arg/env replacement。
-- [ ] 补 shell context tests：runtime ELF 存在时 shell hook 注入 `KERNEL_ELF`。
-- [ ] 补 runtime artifact state tests：Cargo artifact path 和 custom ELF path 的旧行为等价。
+- [x] 补 variable replacement tests：`${workspace}`、`${workspaceFolder}`、`${package}`、`${tmpDir}`、`${env:VAR}`、missing env -> empty string。
+- [x] 补 process context tests：workdir、`WORKSPACE_FOLDER`、arg/env replacement。
+- [x] 补 shell context tests：runtime ELF 存在时 shell hook 注入 `KERNEL_ELF`。
+- [x] 补 runtime artifact state tests：Cargo artifact path 和 custom ELF path 的旧行为等价。
 - [x] 保留现有 public API trybuild expectations；R1a 只记录当前 `Tool` API 基线，不提前接受 API break。
 - [x] Run `cargo test -p ostool public_api`。
 - [x] Run parser/selector 相关最小测试。
-- [ ] Run variable/process/artifact 相关最小测试。
+- [x] Run variable/process/artifact 相关最小测试。
 
 审查重点：
 
@@ -510,11 +510,13 @@ R1 按 R1a-R1i 保守切片执行。切片编号是执行顺序，不改变最�
 当前完成记录（2026-05-14）：
 
 - 已新增主 CLI parser tests、`cargo-osrun` parser tests 和 Cargo executable artifact selector tests。
+- 已补齐变量替换、进程 env、shell hook 和 Cargo artifact state 行为测试。
 - 已用 Docker `rust:1.90-bookworm` 验证：
   - `cargo test -p ostool parse_`
   - `cargo test -p ostool select_executable_artifact`
   - `cargo fmt --all -- --check`
   - `cargo test -p ostool public_api`
+  - `cargo test -p ostool --lib`
 - host 上没有 `cargo`，验证通过容器内 `/usr/local/cargo/bin` 工具链执行；容器内补了 `pkg-config` 和
   `libudev-dev`，格式检查需临时安装 `rustfmt` component。
 

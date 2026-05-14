@@ -764,10 +764,25 @@ R1 按 R1a-R1i 保守切片执行。切片编号是执行顺序，不改变最�
 - [ ] QEMU/U-Boot execution 显式接收 prepared runtime artifact state。
 - [ ] 保持 QEMU `to_bin`、default machine、`--dtb-dump`、`-kernel`、UEFI pflash/ESP、output matcher 行为。
 - [ ] 保持 U-Boot local/remote backend、FIT generation、TFTP/YMODEM staging、post-run command 行为。
-- [ ] 保持 board session acquire/retry/heartbeat/release 行为。
-- [ ] 增加或保留 board/session 层面的最小 contract test：release-on-error、no-available-board retry、heartbeat 不弱化；无法用当前 seam 覆盖的真实硬件路径必须记录为未验证。
-- [ ] Run `cargo test -p ostool qemu_byte_stream`。
-- [ ] Run board/session 相关最小测试。
+- [x] 保持 board session acquire/retry/heartbeat/release 行为。
+- [x] 增加或保留 board/session 层面的最小 contract test：release-on-error、no-available-board retry、heartbeat 不弱化；无法用当前 seam 覆盖的真实硬件路径必须记录为未验证。
+- [x] Run `cargo test -p ostool qemu_byte_stream`。
+- [x] Run board/session 相关最小测试。
+
+当前完成记录（2026-05-14）：
+
+- 已给 board session finalization 增加可测试 seam，覆盖 run error 后仍执行 release，以及 run/release 同时失败时保留 run error 并附带 release error。
+- 已给 heartbeat loop 增加可测试 seam，覆盖 heartbeat 更新 lease 并响应 stop signal；真实 server/硬件路径未在本地验证。
+- 既有 no-available-board retry、missing board type 和 non-conflict error tests 保留并通过。
+- QEMU byte-stream matcher contract tests 保留并通过。
+- runner/board 直接替换 `impl Tool` blocks 仍留到 R1h/API reset 收口。
+- 已用 Docker `rust:1.90-bookworm` 验证：
+  - `cargo fmt --all -- --check`
+  - `cargo test -p ostool finalize_session`
+  - `cargo test -p ostool acquire_session`
+  - `cargo test -p ostool heartbeat_loop`
+  - `cargo test -p ostool qemu_byte_stream`
+  - `cargo check -p ostool`
 - [ ] Run `cargo check -p ostool`。
 
 审查重点：

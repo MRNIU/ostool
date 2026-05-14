@@ -6,7 +6,7 @@ pub mod serial_stream;
 pub mod session;
 pub mod terminal;
 
-use std::path::Path;
+use std::{future::Future, path::Path};
 
 use anyhow::Context as _;
 
@@ -163,7 +163,18 @@ async fn finalize_session(
     session: BoardSession,
     run_result: anyhow::Result<()>,
 ) -> anyhow::Result<()> {
-    let release_result = session.release().await;
+    finalize_session_with(run_result, || session.release()).await
+}
+
+async fn finalize_session_with<ReleaseFn, ReleaseFut>(
+    run_result: anyhow::Result<()>,
+    release: ReleaseFn,
+) -> anyhow::Result<()>
+where
+    ReleaseFn: FnOnce() -> ReleaseFut,
+    ReleaseFut: Future<Output = anyhow::Result<()>>,
+{
+    let release_result = release().await;
     match (run_result, release_result) {
         (Ok(()), Ok(())) => Ok(()),
         (Err(err), Ok(())) => Err(err),
@@ -287,7 +298,12 @@ impl Tool {
 
 #[cfg(test)]
 mod tests {
-    use super::{RunBoardOptions, render_board_table};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    use super::{RunBoardOptions, finalize_session_with, render_board_table};
     use crate::board::client::BoardTypeSummary;
 
     #[test]
@@ -312,5 +328,34 @@ mod tests {
     #[test]
     fn render_board_table_handles_empty_results() {
         assert_eq!(render_board_table(&[]), "No board types found.");
+    }
+
+    #[tokio::test]
+    async fn finalize_session_releases_after_run_error() {
+        let released = Arc::new(AtomicBool::new(false));
+        let result = finalize_session_with(Err(anyhow::anyhow!("run failed")), {
+            let released = released.clone();
+            move || async move {
+                released.store(true, Ordering::SeqCst);
+                Ok(())
+            }
+        })
+        .await;
+
+        assert!(released.load(Ordering::SeqCst));
+        assert!(result.unwrap_err().to_string().contains("run failed"));
+    }
+
+    #[tokio::test]
+    async fn finalize_session_preserves_run_error_and_reports_release_error() {
+        let result = finalize_session_with(Err(anyhow::anyhow!("run failed")), || async {
+            Err(anyhow::anyhow!("release failed"))
+        })
+        .await;
+
+        let rendered = format!("{:#}", result.unwrap_err());
+        assert!(rendered.contains("run failed"));
+        assert!(rendered.contains("additionally failed to release board session"));
+        assert!(rendered.contains("release failed"));
     }
 }

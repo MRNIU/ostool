@@ -184,3 +184,78 @@ fn report_error(err: &anyhow::Error) {
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use clap::Parser;
+
+    use super::{RunnerArgs, SubCommands};
+
+    #[test]
+    fn parse_default_qemu_runner_args() {
+        let args = RunnerArgs::try_parse_from([
+            "cargo-osrun",
+            "qemu-system-aarch64",
+            "target/kernel.elf",
+            "--to-bin",
+            "--config",
+            "qemu.toml",
+            "--show-output",
+            "--debug",
+            "--dtb-dump",
+            "--build-dir",
+            "target/custom",
+            "--bin-dir",
+            "dist",
+        ])
+        .unwrap();
+
+        assert_eq!(args.program, Path::new("qemu-system-aarch64"));
+        assert_eq!(args.elf, Path::new("target/kernel.elf"));
+        assert!(args.to_bin);
+        assert_eq!(args.config.as_deref(), Some(Path::new("qemu.toml")));
+        assert!(args.show_output);
+        assert!(args.debug);
+        assert!(args.dtb_dump);
+        assert_eq!(args.build_dir.as_deref(), Some("target/custom"));
+        assert_eq!(args.bin_dir.as_deref(), Some("dist"));
+        assert!(args.command.is_none());
+    }
+
+    #[test]
+    fn parse_no_run_without_runner_command() {
+        let args = RunnerArgs::try_parse_from([
+            "cargo-osrun",
+            "qemu-system-riscv64",
+            "target/kernel.elf",
+            "--no-run",
+        ])
+        .unwrap();
+
+        assert!(args.no_run);
+        assert!(args.command.is_none());
+    }
+
+    #[test]
+    fn parse_uboot_runner_subcommand() {
+        let args = RunnerArgs::try_parse_from([
+            "cargo-osrun",
+            "qemu-system-aarch64",
+            "target/kernel.elf",
+            "uboot",
+            "--",
+            "bootm",
+            "${kernel_addr_r}",
+        ])
+        .unwrap();
+
+        match args.command {
+            Some(SubCommands::Uboot(uboot)) => {
+                assert_eq!(uboot.runner_args, ["bootm", "${kernel_addr_r}"]);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+}

@@ -134,6 +134,17 @@ R0 复核后的关键修正：
 R1 的详细目录结构、命名、分阶段任务和多维 review 清单见：
 `docs/fork-only/2026-05-14-ostool-r1-invocation-architecture-plan.md`。
 
+R1 复核后的关键执行修正：
+
+- R1 的目录结构是允许拓扑，不是一次性文件创建清单；无状态 helper 默认用 module-level function，
+  只有当前切片确实需要时才拆文件或引入对象。
+- R1a 只补当前行为护栏，不提前修改 `Tool` / `ctx` public API trybuild expectation；API reset 放到
+  R1h 删除 `Tool` 时处理。
+- R1d 抽出 `CargoBuildOutcome` 时必须保留过渡 legacy runtime adapter，避免当前 runner 依赖的
+  artifact side effect 丢失；R1e 再把这个 adapter 收敛到正式 runtime artifact helper。
+- R1g 改造 runner/board entrypoint 时必须补 board/session 最小 contract test，或明确记录真实
+  board/server 路径未验证，不能用 host-only 测试冒充硬件证明。
+
 R1 的核心模型：
 
 - `ProjectLayout`：只读项目路径事实，替代 `ManifestContext` 的语义。

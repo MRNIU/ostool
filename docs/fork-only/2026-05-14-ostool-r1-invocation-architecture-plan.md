@@ -342,42 +342,46 @@ R1 应使用 Rust-native 模块边界，不要为了“看起来抽象”到处�
 - 避免结构体长期持有很多 `&mut` 引用；优先显式函数参数和短 borrow scope。
 - 命名描述领域操作，不描述空泛模式。例如 `artifact_selector::select_executable_artifact` 优于无状态的 `ArtifactSelector` 对象。
 
-## 5. 目标目录结构
+## 5. 允许的目标拓扑
+
+下面是 R1 完成后允许出现的模块拓扑，不是一次性创建清单。执行时仍遵守文件和对象预算：
+只在当前切片需要时创建文件；一个 helper 足够时留在现有模块或单个 `mod.rs`；无状态逻辑优先用
+module-level function。
 
 ```text
 ostool/src/
   lib.rs                         [modify] 更新导出；移除 `tool` 作为中心模块
   main.rs                        [modify] 创建 `Invocation`，调用显式服务
-  invocation.rs                  [create] Invocation, InvocationOptions, InvocationState
+  invocation.rs                  [create when needed] Invocation, InvocationOptions, InvocationState
 
-  ctx.rs                         [delete] AppContext 角色迁移到 InvocationState；OutputArtifacts 迁移到 artifact/state.rs
-  tool.rs                        [delete] 移除 Tool, ToolConfig, ManifestContext
+  ctx.rs                         [delete in R1h] AppContext 角色迁移到 InvocationState；OutputArtifacts 迁移到 artifact/state.rs
+  tool.rs                        [delete in R1h] 移除 Tool, ToolConfig, ManifestContext
 
-  project/                       [create] project discovery 和项目本地 helper
-    mod.rs                       [create]
-    layout.rs                    [create] ProjectLayout, resolve_project_layout()
-    metadata.rs                  [create] cargo metadata、package lookup、package manifest dir
-    variables.rs                 [create] VariableScope 和变量替换 helper
+  project/                       [create only as helpers accumulate] project discovery 和项目本地 helper
+    mod.rs                       [create when needed]
+    layout.rs                    [create when needed] ProjectLayout, resolve_project_layout()
+    metadata.rs                  [create when needed] cargo metadata、package lookup、package manifest dir
+    variables.rs                 [create when needed] VariableScope 和变量替换 helper
 
-  process/                       [create] process context、command construction、shell execution
-    mod.rs                       [create]
-    command.rs                   [create] command construction helpers
-    shell.rs                     [create] shell command execution helpers
+  process/                       [create only as helpers accumulate] process context、command construction、shell execution
+    mod.rs                       [create when needed]
+    command.rs                   [optional] command construction helpers
+    shell.rs                     [optional] shell command execution helpers
 
-  artifact/                      [create] runtime artifact state 和 preparation
-    mod.rs                       [create]
-    state.rs                     [create] OutputArtifacts
-    runtime.rs                   [create] RuntimeArtifactPreparer, PreparedRuntimeArtifacts
+  artifact/                      [create only as helpers accumulate] runtime artifact state 和 preparation
+    mod.rs                       [create when needed]
+    state.rs                     [create when needed] OutputArtifacts
+    runtime.rs                   [create when needed] RuntimeArtifactPreparer, PreparedRuntimeArtifacts
 
   build/
     mod.rs                       [modify] 暴露明确 build functions/types，不再 `impl Tool`
     config.rs                    [keep] R1 不改用户可见配置语义
     someboot.rs                  [keep] R1 不改 someboot 语义
-    cargo_builder.rs             [delete or rename] 改为 cargo_pipeline.rs
-    cargo_pipeline.rs            [create] CargoBuildPipeline / run_cargo_build()
-    artifact_selector.rs         [create] Cargo JSON executable artifact selection
-    config_loader.rs             [create] BuildConfigLoader
-    config_hooks.rs              [create] jkconfig hooks for build config
+    cargo_builder.rs             [delete or rename in R1d/R1h] 改为 cargo_pipeline.rs 或 module function
+    cargo_pipeline.rs            [create when needed] CargoBuildPipeline / run_cargo_build()
+    artifact_selector.rs         [create when needed] Cargo JSON executable artifact selection
+    config_loader.rs             [create when needed] BuildConfigLoader 或 module functions
+    config_hooks.rs              [create when needed] jkconfig hooks for build config
 
   run/
     mod.rs                       [modify] runner entrypoints 不再依赖 Tool
@@ -476,30 +480,43 @@ R1 按 R1a-R1i 保守切片执行。切片编号是执行顺序，不改变最�
 - Modify: `ostool/src/main.rs`
 - Modify: `ostool/src/bin/cargo-osrun.rs`
 - Modify: `ostool/tests/public_api.rs`
-- Modify or replace: `ostool/tests/ui/pass_tool_configs.rs`
+- Keep unchanged until R1h: `ostool/tests/ui/pass_tool_configs.rs`
 - Add or move tests near: `project::variables`、`build::artifact_selector`、`artifact::runtime`、`process`
 
 步骤：
 
-- [ ] 补 `ostool build --config --package --bin` parser tests。
-- [ ] 补 `ostool run qemu --config --qemu-config --debug --dtb-dump --package --bin` parser tests。
-- [ ] 补 `ostool run uboot --config --uboot-config --package --bin` parser tests。
-- [ ] 补 global `--manifest` parser tests。
-- [ ] 补 `cargo-osrun` parser tests：default QEMU、`uboot`、`--to-bin`、`--no-run`、`--build-dir`、`--bin-dir`。
-- [ ] 补 Cargo artifact selector tests：显式 `bin`、package 同名 bin、`default-run`、single bin、多 bin ambiguity。
+- [x] 补 `ostool build --config --package --bin` parser tests。
+- [x] 补 `ostool run qemu --config --qemu-config --debug --dtb-dump --package --bin` parser tests。
+- [x] 补 `ostool run uboot --config --uboot-config --package --bin` parser tests。
+- [x] 补 global `--manifest` parser tests。
+- [x] 补 `cargo-osrun` parser tests：default QEMU、`uboot`、`--to-bin`、`--no-run`、`--build-dir`、`--bin-dir`。
+- [x] 补 Cargo artifact selector tests：显式 `bin`、package 同名 bin、`default-run`、single bin、多 bin ambiguity。
 - [ ] 补 variable replacement tests：`${workspace}`、`${workspaceFolder}`、`${package}`、`${tmpDir}`、`${env:VAR}`、missing env -> empty string。
 - [ ] 补 process context tests：workdir、`WORKSPACE_FOLDER`、arg/env replacement。
 - [ ] 补 shell context tests：runtime ELF 存在时 shell hook 注入 `KERNEL_ELF`。
 - [ ] 补 runtime artifact state tests：Cargo artifact path 和 custom ELF path 的旧行为等价。
-- [ ] 更新 public API trybuild expectations，明确 `Tool` 相关 API reset 是有意变更。
-- [ ] Run `cargo test -p ostool public_api`。
-- [ ] Run parser/selector/variable/process/artifact 相关最小测试。
+- [x] 保留现有 public API trybuild expectations；R1a 只记录当前 `Tool` API 基线，不提前接受 API break。
+- [x] Run `cargo test -p ostool public_api`。
+- [x] Run parser/selector 相关最小测试。
+- [ ] Run variable/process/artifact 相关最小测试。
 
 审查重点：
 
 - 测试必须证明行为，不做 source grep。
 - 不应无意创建新的 stable Rust API promise。
+- 不应提前修改 `Tool` / `ctx` public API expectations；API reset 只在 R1h 发生。
 - selector 和 variable/process tests 是 R1 的行为护栏，不应推迟到 R2。
+
+当前完成记录（2026-05-14）：
+
+- 已新增主 CLI parser tests、`cargo-osrun` parser tests 和 Cargo executable artifact selector tests。
+- 已用 Docker `rust:1.90-bookworm` 验证：
+  - `cargo test -p ostool parse_`
+  - `cargo test -p ostool select_executable_artifact`
+  - `cargo fmt --all -- --check`
+  - `cargo test -p ostool public_api`
+- host 上没有 `cargo`，验证通过容器内 `/usr/local/cargo/bin` 工具链执行；容器内补了 `pkg-config` 和
+  `libudev-dev`，格式检查需临时安装 `rustfmt` component。
 
 ### 任务 2 / R1b：引入 Project、VariableScope 和兼容门面
 
@@ -571,7 +588,7 @@ R1 按 R1a-R1i 保守切片执行。切片编号是执行顺序，不改变最�
 - command/shell helpers 接收 concrete `ProcessContext`，不接 whole `Invocation`。
 - 不创建无状态 `CommandFactory` 或 `ShellCommandRunner`。
 
-### 任务 4 / R1d：抽出 Cargo build outcome seam
+### 任务 4 / R1d：抽出 Cargo build outcome seam，并保留 legacy runtime adapter
 
 **文件：**
 
@@ -590,6 +607,8 @@ R1 按 R1a-R1i 保守切片执行。切片编号是执行顺序，不改变最�
 - [ ] 如果 pipeline 不需要持有状态，优先使用 `run_cargo_build()` module function。
 - [ ] `CargoBuildPipeline` 或 `run_cargo_build()` 接收 `&ProjectLayout`、`&InvocationOptions`、`&ActiveCargoBuild` 和 `ProcessContext` 所需窄输入。
 - [ ] `CargoBuildPipeline` 返回 `CargoBuildOutcome`，不接收 `&mut InvocationState`。
+- [ ] 在 R1e 完成前保留一个过渡 adapter：`CargoBuildOutcome` 必须仍被写回旧 artifact state，且现有 runner 仍能看到与旧行为等价的 `elf`、`bin`、`cargo_artifact_dir`、`runtime_artifact_dir`。
+- [ ] 过渡 adapter 只服务旧状态同步，不把 runner、QEMU、U-Boot 或 board 逻辑塞回 build pipeline。
 - [ ] 保持 pre-build command execution order。
 - [ ] 保持 Cargo command arguments、features、`profile`、log feature、target dir、package、bin、extra config、`args` 和 message format。
 - [ ] 保持 post-build command execution order 和 `KERNEL_ELF` 注入语义。
@@ -607,8 +626,9 @@ R1 按 R1a-R1i 保守切片执行。切片编号是执行顺序，不改变最�
   - single binary
   - ambiguity error for multiple binaries
 - `CargoBuildPipeline` 不知道 QEMU、U-Boot 或 board 行为。
-- `CargoBuildPipeline` 不生成 runtime `.elf` / `.bin`。
+- `CargoBuildPipeline` 本体不生成 runtime `.elf` / `.bin`；过渡 adapter 可以维持旧状态同步，直到 R1e 抽出 runtime helper。
 - `CargoBuildPipeline` 返回 build facts；orchestration 层更新 state。
+- R1d 结束时，`cargo_run` / QEMU / U-Boot 不能因为 outcome seam 丢失 artifact side effect。
 - 如果 struct 只包一层函数调用，删除 struct，保留 module function。
 
 ### 任务 5 / R1e：抽出 RuntimeArtifactPreparer
@@ -634,6 +654,7 @@ R1 按 R1a-R1i 保守切片执行。切片编号是执行顺序，不改变最�
 - [ ] 只有 helper 需要持有 options、process context 或 cache 时，才保留 `RuntimeArtifactPreparer` struct；否则使用 module function。
 - [ ] 支持从 `CargoBuildOutcome` 准备 runtime artifact。
 - [ ] 支持从 custom ELF path 准备 runtime artifact。
+- [ ] 删除或替换 R1d 的过渡 legacy runtime adapter，让 runtime conversion 只通过本任务的 helper 发生。
 - [ ] 替换 `Tool::prepare_elf_artifact`、`Tool::set_elf_artifact_path`、`Tool::objcopy_elf`、`Tool::objcopy_output_bin` call sites。
 - [ ] 保持当前 artifact 字段和更新行为：
   - `elf`
@@ -707,7 +728,9 @@ R1 按 R1a-R1i 保守切片执行。切片编号是执行顺序，不改变最�
 - [ ] 保持 QEMU `to_bin`、default machine、`--dtb-dump`、`-kernel`、UEFI pflash/ESP、output matcher 行为。
 - [ ] 保持 U-Boot local/remote backend、FIT generation、TFTP/YMODEM staging、post-run command 行为。
 - [ ] 保持 board session acquire/retry/heartbeat/release 行为。
+- [ ] 增加或保留 board/session 层面的最小 contract test：release-on-error、no-available-board retry、heartbeat 不弱化；无法用当前 seam 覆盖的真实硬件路径必须记录为未验证。
 - [ ] Run `cargo test -p ostool qemu_byte_stream`。
+- [ ] Run board/session 相关最小测试。
 - [ ] Run `cargo check -p ostool`。
 
 审查重点：
@@ -716,6 +739,7 @@ R1 按 R1a-R1i 保守切片执行。切片编号是执行顺序，不改变最�
 - 不引入泛化 `RunContext` 取代 `Tool`。
 - 如果 helper 依赖很多输入，按职责拆分，而不是扩大对象。
 - 这是副作用风险最高的切片；前面 seam 未稳定前不要提前做。
+- board/session 测试可以使用 mock server 或现有 client/session seam；不要用 source grep 证明 release/heartbeat 行为。
 
 ### 任务 8 / R1h：移除 `Tool` 并清理导出
 
@@ -734,6 +758,7 @@ R1 按 R1a-R1i 保守切片执行。切片编号是执行顺序，不改变最�
 - [ ] Remove `pub use tool::{ManifestContext, Tool, ToolConfig, resolve_manifest_context}`。
 - [ ] Remove or intentionally replace public `ctx` module and `OutputArtifacts` export。
 - [ ] 如果选择 Upstream-friendly mode，提供 deprecated compatibility wrappers/re-exports。
+- [ ] 更新 public API trybuild expectations，明确 `Tool`、`ToolConfig`、`ManifestContext`、`AppContext`、`ctx::OutputArtifacts` reset 是有意变更。
 - [ ] Export only intended modules and public types。
 - [ ] Remove all `use crate::Tool` imports。
 - [ ] Run `rg -n "Tool|ToolConfig|ManifestContext|AppContext|impl Tool" ostool/src ostool/tests`。

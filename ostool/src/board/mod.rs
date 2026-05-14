@@ -1,4 +1,4 @@
-//! Board-server configuration, session allocation, and board run helpers.
+//! Board-server client workflows, board config loading, and board-backed runs.
 
 pub mod client;
 pub mod config;
@@ -162,6 +162,7 @@ fn print_allocated_board_session(session: &BoardSession, board_type: &str) {
     println!("  boot_mode: {}", session.info().boot_mode);
 }
 
+/// Releases a board session while preserving the original run error if present.
 async fn finalize_session(
     session: BoardSession,
     run_result: anyhow::Result<()>,
@@ -169,7 +170,7 @@ async fn finalize_session(
     finalize_session_with(run_result, || session.release()).await
 }
 
-/// Releases a board session while preserving any run error as the primary error.
+/// Combines run and release results for testable board-session cleanup behavior.
 async fn finalize_session_with<ReleaseFn, ReleaseFut>(
     run_result: anyhow::Result<()>,
     release: ReleaseFn,
@@ -189,10 +190,12 @@ where
     }
 }
 
+/// Returns the default board-run configuration template.
 pub fn default_board_run_config() -> BoardRunConfig {
     BoardRunConfig::default()
 }
 
+/// Reads a board config for a Cargo package after syncing package variables.
 pub async fn read_board_run_config_from_path_for_cargo(
     invocation: &mut Invocation,
     cargo: &Cargo,
@@ -203,6 +206,7 @@ pub async fn read_board_run_config_from_path_for_cargo(
     BoardRunConfig::read_from_path(invocation, path)
 }
 
+/// Loads or creates `.board.toml` for a Cargo package-scoped run directory.
 pub async fn ensure_board_run_config_in_dir_for_cargo(
     invocation: &mut Invocation,
     cargo: &Cargo,
@@ -213,6 +217,7 @@ pub async fn ensure_board_run_config_in_dir_for_cargo(
     BoardRunConfig::load_or_create(invocation, Some(dir.join(".board.toml"))).await
 }
 
+/// Loads or creates `.board.toml` in a resolved directory.
 pub async fn ensure_board_run_config_in_dir(
     invocation: &mut Invocation,
     dir: &Path,
@@ -221,6 +226,7 @@ pub async fn ensure_board_run_config_in_dir(
     BoardRunConfig::load_or_create(invocation, Some(dir.join(".board.toml"))).await
 }
 
+/// Reads a board config from a resolved path.
 pub async fn read_board_run_config_from_path(
     invocation: &mut Invocation,
     path: &Path,
@@ -229,6 +235,7 @@ pub async fn read_board_run_config_from_path(
     BoardRunConfig::read_from_path(invocation, path)
 }
 
+/// Builds configured runtime artifacts and runs them on a board-server session.
 pub async fn run_board(
     invocation: &mut Invocation,
     build_config: &BuildConfig,
@@ -238,6 +245,7 @@ pub async fn run_board(
     run_board_with_build_config(invocation, build_config, board_config, options).await
 }
 
+/// Runs a Cargo build on a board after syncing Cargo package context.
 pub async fn cargo_run_board(
     invocation: &mut Invocation,
     cargo: &Cargo,
@@ -256,6 +264,7 @@ pub async fn cargo_run_board(
     .await
 }
 
+/// Prepares runtime artifacts before starting a board-backed run.
 async fn run_board_with_build_config(
     invocation: &mut Invocation,
     build_config: &BuildConfig,
@@ -266,6 +275,7 @@ async fn run_board_with_build_config(
     run_prepared_board(invocation, board_config, options).await
 }
 
+/// Acquires a board session and dispatches the prepared artifact by boot mode.
 async fn run_prepared_board(
     invocation: &mut Invocation,
     board_config: &BoardRunConfig,
@@ -311,6 +321,7 @@ mod tests {
         assert_eq!(RunBoardOptions::default().board_type, None);
     }
 
+    /// Verifies board list rendering includes row values and headers.
     #[test]
     fn render_board_table_formats_rows() {
         let rendered = render_board_table(&[BoardTypeSummary {
@@ -325,12 +336,13 @@ mod tests {
         assert!(rendered.contains("arm64,lab"));
     }
 
+    /// Verifies an empty board list renders as an explicit empty-state message.
     #[test]
     fn render_board_table_handles_empty_results() {
         assert_eq!(render_board_table(&[]), "No board types found.");
     }
 
-    /// Verifies session release still happens after the board run fails.
+    /// Verifies session release still happens when the run path fails.
     #[tokio::test]
     async fn finalize_session_releases_after_run_error() {
         let released = Arc::new(AtomicBool::new(false));
@@ -347,7 +359,7 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("run failed"));
     }
 
-    /// Verifies release errors are attached when a failed run also fails release.
+    /// Verifies release failures are appended without hiding run failures.
     #[tokio::test]
     async fn finalize_session_preserves_run_error_and_reports_release_error() {
         let result = finalize_session_with(Err(anyhow::anyhow!("run failed")), || async {

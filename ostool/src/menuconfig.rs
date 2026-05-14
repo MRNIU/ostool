@@ -62,6 +62,7 @@ impl MenuConfigHandler {
         Ok(())
     }
 
+    /// Opens the build configuration editor and stores the selected config.
     async fn handle_default_config(tool: &mut Invocation) -> Result<()> {
         let config_path = tool.resolve_build_config_path(None);
         tool.set_build_config_path(Some(config_path.clone()));
@@ -79,6 +80,7 @@ impl MenuConfigHandler {
         Ok(())
     }
 
+    /// Opens the QEMU configuration editor and writes any selected changes.
     async fn handle_qemu_config(tool: &mut Invocation) -> Result<()> {
         info!("配置 QEMU 运行参数");
 
@@ -106,6 +108,7 @@ impl MenuConfigHandler {
         Ok(())
     }
 
+    /// Opens the U-Boot configuration editor and writes any selected changes.
     async fn handle_uboot_config(tool: &mut Invocation) -> Result<()> {
         info!("配置 U-Boot 运行参数");
 

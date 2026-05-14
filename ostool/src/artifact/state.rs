@@ -1,3 +1,5 @@
+//! Shared artifact path state produced while an ostool invocation runs.
+
 use std::path::PathBuf;
 
 /// Build and runtime artifacts produced during one invocation.

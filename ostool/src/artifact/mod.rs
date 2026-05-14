@@ -7,6 +7,7 @@ use crate::Invocation;
 pub mod runtime;
 pub mod state;
 
+/// Prepares a custom ELF path and records the resulting runtime artifacts.
 pub async fn prepare_elf_artifact(
     invocation: &mut Invocation,
     path: PathBuf,

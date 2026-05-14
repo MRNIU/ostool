@@ -1,3 +1,5 @@
+//! U-Boot runner for local serial devices and remote ostool-server sessions.
+
 use std::{
     io,
     path::{Path, PathBuf},
@@ -108,6 +110,7 @@ pub struct LocalUbootConfig {
 }
 
 impl UbootConfig {
+    /// Builds a U-Boot runtime config from board-run configuration fields.
     pub fn from_board_run_config(config: &BoardRunConfig) -> Self {
         Self {
             dtb_file: config.dtb_file.clone(),
@@ -121,6 +124,7 @@ impl UbootConfig {
         }
     }
 
+    /// Expands ostool placeholders in local, network, command, and matcher fields.
     fn replace_strings(&mut self, tool: &Invocation) -> anyhow::Result<()> {
         self.dtb_file = self
             .dtb_file
@@ -207,12 +211,14 @@ impl UbootConfig {
         )
     }
 
+    /// Builds the optional shell auto-init matcher for post-boot interaction.
     fn shell_auto_init(&self) -> Option<ShellAutoInitMatcher> {
         ShellAutoInitMatcher::new(self.shell_prefix.clone(), self.shell_init_cmd.clone())
     }
 }
 
 impl LocalUbootConfig {
+    /// Expands ostool placeholders in local serial, power, and network fields.
     fn replace_strings(&mut self, tool: &Invocation) -> anyhow::Result<()> {
         self.serial = self
             .serial
@@ -253,6 +259,7 @@ pub struct Net {
 }
 
 impl Net {
+    /// Expands ostool placeholders in network and TFTP path fields.
     fn replace_strings(&mut self, tool: &Invocation) -> anyhow::Result<()> {
         self.interface = tool.replace_string(&self.interface)?;
         self.board_ip = self
@@ -284,6 +291,7 @@ pub struct RunUbootOptions {
     pub show_output: bool,
 }
 
+/// Returns the default local U-Boot runtime configuration template.
 pub fn default_uboot_config() -> UbootConfig {
     UbootConfig {
         local: LocalUbootConfig {
@@ -295,6 +303,7 @@ pub fn default_uboot_config() -> UbootConfig {
     }
 }
 
+/// Reads U-Boot config for a Cargo package after syncing package variables.
 pub async fn read_uboot_config_from_path_for_cargo(
     invocation: &mut Invocation,
     cargo: &crate::build::config::Cargo,
@@ -305,6 +314,7 @@ pub async fn read_uboot_config_from_path_for_cargo(
     read_uboot_config_at_path(invocation, config_path).await
 }
 
+/// Loads or creates the workspace U-Boot config for a Cargo build.
 pub async fn ensure_uboot_config_for_cargo(
     invocation: &mut Invocation,
     cargo: &crate::build::config::Cargo,
@@ -314,6 +324,7 @@ pub async fn ensure_uboot_config_for_cargo(
     ensure_uboot_config_in_dir_for_cargo(invocation, cargo, &workspace_dir).await
 }
 
+/// Loads or creates `.uboot.toml` in a resolved Cargo run directory.
 pub async fn ensure_uboot_config_in_dir_for_cargo(
     invocation: &mut Invocation,
     cargo: &crate::build::config::Cargo,
@@ -324,6 +335,7 @@ pub async fn ensure_uboot_config_in_dir_for_cargo(
     ensure_uboot_config_at_path(invocation, dir.join(".uboot.toml"), default_uboot_config()).await
 }
 
+/// Loads or creates `.uboot.toml` in a resolved directory.
 pub async fn ensure_uboot_config_in_dir(
     invocation: &mut Invocation,
     dir: &Path,
@@ -332,6 +344,7 @@ pub async fn ensure_uboot_config_in_dir(
     ensure_uboot_config_at_path(invocation, dir.join(".uboot.toml"), default_uboot_config()).await
 }
 
+/// Reads U-Boot config from an explicit resolved path.
 pub async fn read_uboot_config_from_path(
     invocation: &mut Invocation,
     path: &Path,
@@ -340,6 +353,7 @@ pub async fn read_uboot_config_from_path(
     read_uboot_config_at_path(invocation, config_path).await
 }
 
+/// Runs a prepared artifact through the local U-Boot backend.
 pub async fn run_uboot(
     invocation: &mut Invocation,
     config: &UbootConfig,
@@ -354,6 +368,7 @@ pub async fn run_uboot(
     runner.run().await
 }
 
+/// Runs a prepared artifact through an ostool-server managed U-Boot session.
 pub async fn run_uboot_remote(
     invocation: &mut Invocation,
     board_config: &BoardRunConfig,
@@ -366,6 +381,7 @@ pub async fn run_uboot_remote(
     runner.run().await
 }
 
+/// Reads and normalizes a U-Boot config from an already resolved path.
 async fn read_uboot_config_at_path(
     tool: &Invocation,
     config_path: PathBuf,
@@ -383,6 +399,7 @@ async fn read_uboot_config_at_path(
     Ok(config)
 }
 
+/// Reads an existing U-Boot config or writes a default template at the path.
 async fn ensure_uboot_config_at_path(
     tool: &Invocation,
     config_path: PathBuf,
@@ -449,24 +466,34 @@ struct PreparedDtb {
 
 #[async_trait]
 trait RunnerBackend {
+    /// Resolves backend-specific runtime network and boot parameters.
     async fn resolve_runtime(
         &mut self,
         tool: &mut Invocation,
         config: &UbootConfig,
     ) -> anyhow::Result<ResolvedRuntime>;
+    /// Resolves or downloads the DTB source used for FIT image generation.
     async fn prepare_dtb(
         &mut self,
         tool: &Invocation,
         config: &UbootConfig,
     ) -> anyhow::Result<PreparedDtb>;
+    /// Opens the serial console transport used by the U-Boot shell.
     async fn open_console(&mut self) -> anyhow::Result<ConsoleTransport>;
+    /// Runs backend-specific work after the console transport is available.
     async fn after_console_open(&mut self, tool: &Invocation) -> anyhow::Result<()>;
+    /// Stages the generated FIT image and returns the boot command inputs.
+    /// Stages a FIT image for the local backend or marks it for serial upload.
+    /// Uploads the FIT image to the remote session file store when TFTP is available.
+    /// Uploads the FIT image to the remote session file store when TFTP is available.
     async fn stage_fit_image(
         &mut self,
         fitimage: &Path,
         runtime: &ResolvedRuntime,
     ) -> anyhow::Result<PreparedBootArtifact>;
+    /// Cleans up console tasks after terminal interaction finishes.
     async fn finish_console(&mut self) -> anyhow::Result<()>;
+    /// Runs backend-specific cleanup after the boot flow exits.
     async fn after_run(&mut self, tool: &Invocation) -> anyhow::Result<()>;
 }
 
@@ -479,6 +506,7 @@ struct LocalBackend {
 }
 
 impl LocalBackend {
+    /// Creates local backend state from local U-Boot configuration.
     fn new(config: LocalUbootConfig) -> Self {
         Self {
             config,
@@ -492,6 +520,7 @@ impl LocalBackend {
 
 #[async_trait]
 impl RunnerBackend for LocalBackend {
+    /// Resolves local serial baud rate and TFTP server state.
     async fn resolve_runtime(
         &mut self,
         tool: &mut Invocation,
@@ -590,6 +619,7 @@ impl RunnerBackend for LocalBackend {
         })
     }
 
+    /// Uses the configured local DTB path as the FIT image source.
     async fn prepare_dtb(
         &mut self,
         _tool: &Invocation,
@@ -623,6 +653,7 @@ impl RunnerBackend for LocalBackend {
         })
     }
 
+    /// Runs a local board reset command after opening the serial console.
     async fn after_console_open(&mut self, tool: &Invocation) -> anyhow::Result<()> {
         println!("Waiting for board on power or reset...");
         if let Some(cmd) = self.config.board_reset_cmd.as_deref()
@@ -633,6 +664,7 @@ impl RunnerBackend for LocalBackend {
         Ok(())
     }
 
+    /// Uploads the FIT image to the remote session file store when TFTP is available.
     async fn stage_fit_image(
         &mut self,
         fitimage: &Path,
@@ -684,6 +716,7 @@ impl RunnerBackend for LocalBackend {
         Ok(())
     }
 
+    /// Runs the local board power-off command after terminal interaction.
     async fn after_run(&mut self, tool: &Invocation) -> anyhow::Result<()> {
         if let Some(cmd) = self.config.board_power_off_cmd.as_deref()
             && !cmd.trim().is_empty()
@@ -706,6 +739,7 @@ struct RemoteBackend {
 }
 
 impl RemoteBackend {
+    /// Creates remote backend state for an allocated ostool-server session.
     fn new(client: BoardServerClient, session: SessionCreatedResponse) -> Self {
         Self {
             client,
@@ -721,6 +755,7 @@ impl RemoteBackend {
 
 #[async_trait]
 impl RunnerBackend for RemoteBackend {
+    /// Resolves runtime details from remote boot, serial, and TFTP metadata.
     async fn resolve_runtime(
         &mut self,
         _tool: &mut Invocation,
@@ -810,6 +845,7 @@ impl RunnerBackend for RemoteBackend {
         })
     }
 
+    /// Uploads a local DTB override or downloads the session preset DTB.
     async fn prepare_dtb(
         &mut self,
         tool: &Invocation,
@@ -903,11 +939,13 @@ impl RunnerBackend for RemoteBackend {
         Ok(ConsoleTransport { tx, rx })
     }
 
+    /// Reports that ostool-server is responsible for powering the board.
     async fn after_console_open(&mut self, _tool: &Invocation) -> anyhow::Result<()> {
         println!("Waiting for remote board to power on through ostool-server...");
         Ok(())
     }
 
+    /// Uploads the FIT image to the remote session file store when TFTP is available.
     async fn stage_fit_image(
         &mut self,
         fitimage: &Path,
@@ -956,6 +994,7 @@ impl RunnerBackend for RemoteBackend {
         Ok(())
     }
 
+    /// Completes remote post-run cleanup after console shutdown.
     async fn after_run(&mut self, _tool: &Invocation) -> anyhow::Result<()> {
         Ok(())
     }
@@ -965,6 +1004,7 @@ impl<'a, B> Runner<'a, B>
 where
     B: RunnerBackend,
 {
+    /// Creates a runner around a prepared invocation, config, and backend.
     fn new(tool: &'a mut Invocation, config: UbootConfig, backend: B) -> Self {
         Self {
             tool,
@@ -1094,6 +1134,7 @@ where
         run_result
     }
 
+    /// Executes the FIT generation, transport staging, boot command, and terminal loop.
     async fn _run(&mut self) -> anyhow::Result<()> {
         self.prepare_regex()?;
         self.tool.objcopy_output_bin()?;
@@ -1437,6 +1478,7 @@ fn detect_tftp_ip(net: Option<&Net>) -> Option<String> {
     Some(ip_string)
 }
 
+/// Converts a config timeout into terminal timeout semantics.
 fn timeout_duration(timeout: Option<u64>) -> Option<Duration> {
     match timeout {
         Some(0) | None => None,
@@ -1538,6 +1580,7 @@ mod tests {
         assert!(err.to_string().contains("shell_prefix"));
     }
 
+    /// Verifies shell auto-init fields are trimmed during normalization.
     #[test]
     fn uboot_config_normalize_trims_shell_fields() {
         let mut config = UbootConfig {
@@ -1557,6 +1600,7 @@ mod tests {
         assert_eq!(config.shell_init_cmd.as_deref(), Some("root"));
     }
 
+    /// Verifies zero disables the U-Boot terminal timeout.
     #[test]
     fn uboot_timeout_zero_disables_timeout() {
         assert_eq!(timeout_duration(None), None);
@@ -1580,6 +1624,7 @@ timeout = 0
         assert_eq!(config.timeout, Some(0));
     }
 
+    /// Verifies placeholder expansion across U-Boot config string fields.
     #[test]
     fn uboot_config_replaces_string_fields() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1684,6 +1729,7 @@ timeout = 0
         );
     }
 
+    /// Verifies board-run config fields are preserved in U-Boot config.
     #[test]
     fn uboot_config_from_board_run_config_keeps_dtb_file() {
         let config = UbootConfig::from_board_run_config(&BoardRunConfig {
@@ -1711,6 +1757,7 @@ timeout = 0
         );
     }
 
+    /// Verifies missing `.uboot.toml` files are created from defaults.
     #[tokio::test]
     async fn ensure_uboot_config_in_dir_creates_default_file() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1739,6 +1786,7 @@ timeout = 0
         assert!(tmp.path().join(".uboot.toml").exists());
     }
 
+    /// Verifies package-scoped placeholders expand for U-Boot configs.
     #[tokio::test]
     async fn ensure_uboot_config_in_dir_replaces_package_variables() {
         let tmp = tempfile::tempdir().unwrap();

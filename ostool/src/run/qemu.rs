@@ -87,6 +87,7 @@ pub struct QemuConfig {
 }
 
 impl QemuConfig {
+    /// Expands ostool placeholders in command arguments and matcher fields.
     fn replace_strings(&mut self, tool: &Invocation) -> anyhow::Result<()> {
         self.args = self
             .args
@@ -148,6 +149,7 @@ pub fn default_qemu_config_for_cargo(invocation: &Invocation, cargo: &Cargo) -> 
     build_default_qemu_config(infer_target_arch(&cargo.target).or(invocation.ctx().arch))
 }
 
+/// Reads QEMU config for a Cargo package after syncing package variables.
 pub async fn read_qemu_config_from_path_for_cargo(
     invocation: &mut Invocation,
     cargo: &Cargo,
@@ -158,6 +160,7 @@ pub async fn read_qemu_config_from_path_for_cargo(
     read_qemu_config_at_path(invocation, config_path).await
 }
 
+/// Loads or creates the package-scoped QEMU config for a Cargo build.
 pub async fn ensure_qemu_config_for_cargo(
     invocation: &mut Invocation,
     cargo: &Cargo,
@@ -170,6 +173,7 @@ pub async fn ensure_qemu_config_for_cargo(
     ensure_qemu_config_at_path(invocation, config_path, default_config).await
 }
 
+/// Loads or creates a QEMU config in a caller-provided Cargo run directory.
 pub async fn ensure_qemu_config_in_dir_for_cargo(
     invocation: &mut Invocation,
     cargo: &Cargo,
@@ -215,6 +219,7 @@ pub async fn run_qemu(
     run_qemu_with_config(invocation, options, config).await
 }
 
+/// Reads and normalizes a QEMU config from an already resolved path.
 async fn read_qemu_config_at_path(
     tool: &Invocation,
     config_path: PathBuf,
@@ -231,6 +236,7 @@ async fn read_qemu_config_at_path(
     Ok(config)
 }
 
+/// Reads an existing QEMU config or writes a default template at the path.
 async fn ensure_qemu_config_at_path(
     tool: &Invocation,
     config_path: PathBuf,
@@ -275,6 +281,7 @@ fn build_default_qemu_config(arch: Option<Architecture>) -> QemuConfig {
     config
 }
 
+/// Infers an object architecture from the leading component of a target triple.
 pub(crate) fn infer_target_arch(target: &str) -> Option<Architecture> {
     let target = target.trim();
     if target.is_empty() {
@@ -293,6 +300,7 @@ pub(crate) fn infer_target_arch(target: &str) -> Option<Architecture> {
     }
 }
 
+/// Runs QEMU after all config paths and placeholders have been resolved.
 async fn run_qemu_with_config(
     tool: &mut Invocation,
     run_args: RunQemuOptions,
@@ -317,6 +325,7 @@ struct QemuRunner<'a> {
 }
 
 impl QemuRunner<'_> {
+    /// Builds the QEMU process, wires terminal streams, and enforces matchers.
     async fn run(&mut self) -> anyhow::Result<()> {
         self.prepare_regex()?;
 
@@ -524,6 +533,7 @@ impl QemuRunner<'_> {
         Ok(())
     }
 
+    /// Prepares UEFI pflash and ESP inputs when the config requests UEFI boot.
     async fn prepare_uefi(&self) -> anyhow::Result<Option<UefiBootConfig>> {
         if !self.config.uefi {
             return Ok(None);
@@ -563,6 +573,7 @@ impl QemuRunner<'_> {
         }))
     }
 
+    /// Creates an ESP directory containing the EFI boot image for the target arch.
     async fn prepare_uefi_esp(&self, arch: Arch) -> anyhow::Result<PathBuf> {
         let bin_path = self
             .tool
@@ -593,6 +604,7 @@ impl QemuRunner<'_> {
         Ok(esp_dir)
     }
 
+    /// Chooses the directory where UEFI helper artifacts should be written.
     fn uefi_artifact_dir(&self, bin_path: &Path) -> anyhow::Result<PathBuf> {
         if let Some(dir) = &self.tool.ctx().artifacts.runtime_artifact_dir {
             return Ok(dir.clone());
@@ -607,6 +619,7 @@ impl QemuRunner<'_> {
             .ok_or_else(|| anyhow!("invalid BIN path: {}", bin_path.display()))
     }
 
+    /// Copies the OVMF vars template beside the runtime artifact.
     async fn prepare_uefi_vars(&self, vars_template: &Path) -> anyhow::Result<PathBuf> {
         let bin_path = self
             .tool
@@ -645,6 +658,7 @@ impl QemuRunner<'_> {
         }
     }
 
+    /// Compiles success and failure regexes before terminal interaction starts.
     fn prepare_regex(&mut self) -> anyhow::Result<()> {
         let (success, fail) = compile_regexes(&self.config.success_regex, &self.config.fail_regex)?;
         self.success_regex = success;
@@ -713,6 +727,7 @@ fn timeout_duration(timeout: Option<u64>) -> Option<Duration> {
     }
 }
 
+/// Forwards child-process output into the terminal pipeline and optional capture buffer.
 async fn read_child_stream<R>(
     mut reader: R,
     tx: mpsc::UnboundedSender<Vec<u8>>,
@@ -758,6 +773,7 @@ mod tests {
     };
     use std::collections::HashMap;
 
+    /// Writes a minimal single-crate manifest for config-path tests.
     fn write_single_crate_manifest(dir: &std::path::Path) {
         std::fs::write(
             dir.join("Cargo.toml"),
@@ -768,6 +784,7 @@ mod tests {
         std::fs::write(dir.join("src/lib.rs"), "").unwrap();
     }
 
+    /// Creates an invocation fixture rooted at a temporary Cargo package.
     fn make_tool(dir: &std::path::Path) -> Invocation {
         Invocation::new(InvocationOptions::new(
             Some(dir.to_path_buf()),
@@ -815,6 +832,7 @@ mod tests {
         assert_eq!(infer_target_arch(""), None);
     }
 
+    /// Verifies existing QEMU config files are read without template replacement.
     #[tokio::test]
     async fn load_existing_qemu_config_preserves_file_contents() {
         let tmp = TempDir::new().unwrap();
@@ -847,6 +865,7 @@ shell_init_cmd = "root"
         assert_eq!(config.args, vec!["-nographic", "-machine", "virt"]);
     }
 
+    /// Verifies missing QEMU config files are created from defaults.
     #[tokio::test]
     async fn load_missing_qemu_config_uses_default_template() {
         let tmp = TempDir::new().unwrap();
@@ -869,6 +888,7 @@ shell_init_cmd = "root"
         assert!(config_path.exists());
     }
 
+    /// Verifies Cargo-scoped QEMU config lookup prefers the selected package dir.
     #[tokio::test]
     async fn load_qemu_config_for_cargo_prefers_package_dir() {
         let tmp = TempDir::new().unwrap();
@@ -933,6 +953,7 @@ fail_regex = []
         assert_eq!(config.args, vec!["-custom"]);
     }
 
+    /// Verifies Cargo target triples drive the default QEMU architecture args.
     #[test]
     fn default_qemu_config_for_cargo_uses_target_arch() {
         let tool = Invocation::new(InvocationOptions::default()).unwrap();
@@ -1006,6 +1027,7 @@ timeout = 0
         assert_eq!(config.shell_init_cmd.as_deref(), Some("root"));
     }
 
+    /// Verifies shell auto-init can fire while success matching continues.
     #[test]
     fn qemu_shell_auto_init_can_coexist_with_success_matcher() {
         let mut matcher = ByteStreamMatcher::new(
@@ -1031,6 +1053,7 @@ timeout = 0
         assert_eq!(sent.as_deref(), Some(&b"root\n"[..]));
     }
 
+    /// Verifies UEFI helper artifacts prefer the runtime artifact directory.
     #[test]
     fn uefi_artifact_dir_prefers_runtime_artifact_dir() {
         let runtime_dir = PathBuf::from("/tmp/ostool-runtime");
@@ -1066,6 +1089,7 @@ timeout = 0
         assert_eq!(result, explicit);
     }
 
+    /// Verifies workspace-level QEMU config lookup uses the detected architecture.
     #[test]
     fn qemu_config_workspace_path_used() {
         let tmp = TempDir::new().unwrap();
@@ -1079,6 +1103,7 @@ timeout = 0
         assert_eq!(result, tmp.path().join("qemu-aarch64.toml"));
     }
 
+    /// Verifies architecture-specific QEMU filenames take priority.
     #[test]
     fn qemu_config_filename_priority() {
         let tmp = TempDir::new().unwrap();
@@ -1096,6 +1121,7 @@ timeout = 0
         assert_eq!(result, manifest.join("qemu-aarch64.toml"));
     }
 
+    /// Verifies QEMU config placeholders expand across string fields.
     #[test]
     fn qemu_config_replaces_string_fields() {
         let tmp = TempDir::new().unwrap();
@@ -1140,6 +1166,7 @@ timeout = 0
         assert_eq!(config.shell_init_cmd.as_deref(), Some(expected.as_str()));
     }
 
+    /// Verifies explicit QEMU config paths can be expanded from variables.
     #[test]
     fn qemu_config_explicit_path_supports_variables() {
         let tmp = TempDir::new().unwrap();
@@ -1167,6 +1194,7 @@ timeout = 0
         assert_eq!(result, tmp.path().join(".qemu.toml"));
     }
 
+    /// Verifies default QEMU config filenames include the detected architecture.
     #[test]
     fn qemu_config_default_path_with_arch() {
         let tmp = TempDir::new().unwrap();

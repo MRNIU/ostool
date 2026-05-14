@@ -127,6 +127,7 @@ pub async fn build_with_config(
     Ok(())
 }
 
+/// Runs a custom build command with invocation variable expansion.
 pub(crate) fn build_custom(invocation: &mut Invocation, config: &Custom) -> anyhow::Result<()> {
     invocation.shell_run_cmd(&config.build_cmd)?;
     Ok(())
@@ -141,6 +142,7 @@ pub async fn cargo_build(invocation: &mut Invocation, config: &Cargo) -> anyhow:
     Ok(())
 }
 
+/// Builds and prepares runtime artifacts without starting a runner.
 pub(crate) async fn prepare_runtime_artifacts(
     invocation: &mut Invocation,
     config: &config::BuildConfig,
@@ -156,6 +158,7 @@ pub(crate) async fn prepare_runtime_artifacts(
     }
 }
 
+/// Prepares runtime artifact state from a custom build configuration.
 async fn prepare_custom_runtime_artifacts(
     invocation: &mut Invocation,
     config: &Custom,
@@ -166,6 +169,7 @@ async fn prepare_custom_runtime_artifacts(
         .await
 }
 
+/// Prepares runtime artifact state from a Cargo build configuration.
 async fn prepare_cargo_runtime_artifacts(
     invocation: &mut Invocation,
     config: &Cargo,

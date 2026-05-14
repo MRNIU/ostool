@@ -290,6 +290,7 @@ impl<'a> CargoBuilder<'a> {
         Ok(cmd)
     }
 
+    /// Applies the resolved Cargo artifact to the legacy tool runtime state.
     async fn handle_output(&mut self) -> anyhow::Result<()> {
         let resolved = self.resolved_artifact.clone().ok_or_else(|| {
             anyhow!(
@@ -377,6 +378,7 @@ impl<'a> CargoBuilder<'a> {
         }
     }
 
+    /// Resolves an optional extra Cargo config from a local path or URL.
     async fn cargo_extra_config(&self) -> anyhow::Result<Option<PathBuf>> {
         let s = match self.config.extra_config.as_ref() {
             Some(s) => s,
@@ -684,6 +686,7 @@ mod tests {
     }
 
     #[tokio::test]
+    /// Verifies Cargo artifact state is recorded without forced BIN conversion.
     async fn handle_output_writes_cargo_artifact_state_without_runtime_conversion() {
         let temp = tempfile::tempdir().unwrap();
         fs::write(

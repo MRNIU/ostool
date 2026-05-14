@@ -1,3 +1,5 @@
+//! Legacy tool facade for workspace configuration, build, and run workflows.
+
 use std::{
     env::current_dir,
     ffi::OsStr,
@@ -1082,6 +1084,7 @@ mod tests {
         assert_eq!(replaced, std::env::temp_dir().display().to_string());
     }
 
+    /// Verifies that missing environment placeholders expand to an empty string.
     #[test]
     fn replace_string_uses_empty_string_for_missing_env() {
         let temp = tempfile::tempdir().unwrap();
@@ -1224,6 +1227,7 @@ mod tests {
         );
     }
 
+    /// Verifies shell hooks receive the runtime kernel ELF path.
     #[cfg(unix)]
     #[tokio::test]
     async fn shell_run_cmd_injects_kernel_elf_when_runtime_elf_exists() {
@@ -1442,6 +1446,7 @@ targets = "aarch64-unknown-none"
         root.join("Cargo.toml")
     }
 
+    /// Writes a minimal single-package Cargo project for tool tests.
     fn write_single_package(root: &Path, package: &str) {
         fs::write(
             root.join("Cargo.toml"),

@@ -1,3 +1,5 @@
+//! Main ostool CLI argument parsing and command dispatch.
+
 use std::{path::PathBuf, process::ExitCode};
 
 use anyhow::Result;
@@ -177,6 +179,7 @@ async fn main() -> ExitCode {
     }
 }
 
+/// Parses the CLI and dispatches the selected ostool subcommand.
 async fn try_main() -> Result<()> {
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
 
@@ -335,6 +338,7 @@ async fn try_main() -> Result<()> {
     Ok(())
 }
 
+/// Creates the legacy tool facade from an optional manifest argument.
 fn init_tool(manifest_arg: Option<PathBuf>) -> Result<(Tool, ManifestContext)> {
     let manifest = resolve_manifest_context(manifest_arg.clone())?;
     info!("Using manifest {}", manifest.manifest_path.display());
@@ -346,6 +350,7 @@ fn init_tool(manifest_arg: Option<PathBuf>) -> Result<(Tool, ManifestContext)> {
     Ok((tool, manifest))
 }
 
+/// Loads the build config from an explicit path or workspace default.
 async fn load_build_config(
     tool: &mut Tool,
     manifest: &ManifestContext,
@@ -360,6 +365,7 @@ async fn load_build_config(
     }
 }
 
+/// Applies `--package` and `--bin` overrides to Cargo build configs.
 fn apply_cargo_selector(
     tool: &mut Tool,
     build_config: &mut build::config::BuildConfig,
@@ -384,6 +390,7 @@ fn apply_cargo_selector(
     Ok(())
 }
 
+/// Loads QEMU config from an explicit path or workspace default.
 async fn load_qemu_config(
     tool: &mut Tool,
     manifest: &ManifestContext,
@@ -398,6 +405,7 @@ async fn load_qemu_config(
     }
 }
 
+/// Loads U-Boot config from an explicit path or workspace default.
 async fn load_uboot_config(
     tool: &mut Tool,
     manifest: &ManifestContext,
@@ -412,6 +420,7 @@ async fn load_uboot_config(
     }
 }
 
+/// Loads board-run config from an explicit path or workspace default.
 async fn load_board_config(
     tool: &mut Tool,
     manifest: &ManifestContext,
@@ -426,6 +435,7 @@ async fn load_board_config(
     }
 }
 
+/// Prints CLI errors with a structured trace.
 fn report_error(err: &anyhow::Error) {
     log::error!("{err:#}");
     log::error!("Trace:\n{err:?}");
@@ -440,6 +450,7 @@ mod tests {
 
     use super::{BoardArgs, BoardSubCommands, Cli, RunSubCommands, SubCommands};
 
+    /// Verifies build parsing accepts manifest, config, package, and bin overrides.
     #[test]
     fn parse_build_with_manifest_config_package_and_bin() {
         let cli = Cli::try_parse_from([
@@ -476,6 +487,7 @@ mod tests {
         }
     }
 
+    /// Verifies QEMU run parsing accepts build, QEMU, and Cargo selector args.
     #[test]
     fn parse_run_qemu_with_build_qemu_and_cargo_selector_args() {
         let cli = Cli::try_parse_from([
@@ -516,6 +528,7 @@ mod tests {
         }
     }
 
+    /// Verifies U-Boot run parsing accepts build, U-Boot, and Cargo selector args.
     #[test]
     fn parse_run_uboot_with_build_uboot_and_cargo_selector_args() {
         let cli = Cli::try_parse_from([
@@ -638,6 +651,7 @@ mod tests {
         }
     }
 
+    /// Verifies board run parsing accepts build and board config overrides.
     #[test]
     fn parse_board_run_with_build_and_board_config() {
         let cli = Cli::try_parse_from([
@@ -678,6 +692,7 @@ mod tests {
         }
     }
 
+    /// Verifies board run parsing accepts Cargo package and bin selectors.
     #[test]
     fn parse_board_run_with_cargo_selector_args() {
         let cli = Cli::try_parse_from([

@@ -1,3 +1,5 @@
+//! QEMU-backed smoke tests for the asynchronous U-Boot shell.
+
 use std::{
     process::{Child, Command},
     sync::atomic::AtomicU32,
@@ -14,6 +16,7 @@ use uboot_shell::UbootShell;
 
 static PORT: AtomicU32 = AtomicU32::new(10000);
 
+/// Starts QEMU with the bundled U-Boot image and returns an attached shell.
 async fn new_uboot() -> (Child, UbootShell) {
     let port = PORT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 

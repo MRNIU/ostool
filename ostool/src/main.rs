@@ -438,7 +438,119 @@ fn report_error(err: &anyhow::Error) {
 mod tests {
     use clap::Parser;
 
-    use super::{BoardArgs, BoardSubCommands, Cli, SubCommands};
+    use super::{BoardArgs, BoardSubCommands, Cli, RunSubCommands, SubCommands};
+
+    #[test]
+    fn parse_build_with_manifest_config_package_and_bin() {
+        let cli = Cli::try_parse_from([
+            "ostool",
+            "--manifest",
+            "examples/kernel/Cargo.toml",
+            "build",
+            "--config",
+            "kernel.build.toml",
+            "--package",
+            "kernel",
+            "--bin",
+            "kernel-qemu",
+        ])
+        .unwrap();
+
+        assert_eq!(
+            cli.manifest.as_deref(),
+            Some(std::path::Path::new("examples/kernel/Cargo.toml"))
+        );
+        match cli.command {
+            SubCommands::Build {
+                config,
+                cargo_selector,
+            } => {
+                assert_eq!(
+                    config.as_deref(),
+                    Some(std::path::Path::new("kernel.build.toml"))
+                );
+                assert_eq!(cargo_selector.package.as_deref(), Some("kernel"));
+                assert_eq!(cargo_selector.bin.as_deref(), Some("kernel-qemu"));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_run_qemu_with_build_qemu_and_cargo_selector_args() {
+        let cli = Cli::try_parse_from([
+            "ostool",
+            "run",
+            "qemu",
+            "--config",
+            "kernel.build.toml",
+            "--qemu-config",
+            "kernel.qemu.toml",
+            "--debug",
+            "--dtb-dump",
+            "--package",
+            "kernel",
+            "--bin",
+            "kernel-qemu",
+        ])
+        .unwrap();
+
+        match cli.command {
+            SubCommands::Run {
+                command: RunSubCommands::Qemu(args),
+            } => {
+                assert_eq!(
+                    args.config.as_deref(),
+                    Some(std::path::Path::new("kernel.build.toml"))
+                );
+                assert_eq!(args.cargo_selector.package.as_deref(), Some("kernel"));
+                assert_eq!(args.cargo_selector.bin.as_deref(), Some("kernel-qemu"));
+                assert_eq!(
+                    args.qemu.qemu_config.as_deref(),
+                    Some(std::path::Path::new("kernel.qemu.toml"))
+                );
+                assert!(args.qemu.debug);
+                assert!(args.qemu.dtb_dump);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_run_uboot_with_build_uboot_and_cargo_selector_args() {
+        let cli = Cli::try_parse_from([
+            "ostool",
+            "run",
+            "uboot",
+            "--config",
+            "kernel.build.toml",
+            "--uboot-config",
+            "kernel.uboot.toml",
+            "--package",
+            "kernel",
+            "--bin",
+            "kernel-uboot",
+        ])
+        .unwrap();
+
+        match cli.command {
+            SubCommands::Run {
+                command: RunSubCommands::Uboot(args),
+            } => {
+                assert_eq!(
+                    args.config.as_deref(),
+                    Some(std::path::Path::new("kernel.build.toml"))
+                );
+                assert_eq!(args.cargo_selector.package.as_deref(), Some("kernel"));
+                assert_eq!(args.cargo_selector.bin.as_deref(), Some("kernel-uboot"));
+                assert_eq!(
+                    args.uboot.uboot_config.as_deref(),
+                    Some(std::path::Path::new("kernel.uboot.toml"))
+                );
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
 
     #[test]
     fn parse_board_ls_with_server_args() {
@@ -557,9 +669,34 @@ mod tests {
                     args.board_config.as_deref(),
                     Some(std::path::Path::new("remote.board.toml"))
                 );
+                assert!(args.cargo_selector.is_empty());
                 assert_eq!(args.board_type.as_deref(), Some("rk3568"));
                 assert_eq!(args.server.server.as_deref(), Some("10.0.0.2"));
                 assert_eq!(args.server.port, Some(9000));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_board_run_with_cargo_selector_args() {
+        let cli = Cli::try_parse_from([
+            "ostool",
+            "board",
+            "run",
+            "--package",
+            "kernel",
+            "--bin",
+            "kernel-board",
+        ])
+        .unwrap();
+
+        match cli.command {
+            SubCommands::Board(BoardArgs {
+                command: BoardSubCommands::Run(args),
+            }) => {
+                assert_eq!(args.cargo_selector.package.as_deref(), Some("kernel"));
+                assert_eq!(args.cargo_selector.bin.as_deref(), Some("kernel-board"));
             }
             other => panic!("unexpected command: {other:?}"),
         }

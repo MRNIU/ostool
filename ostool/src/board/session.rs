@@ -7,7 +7,9 @@ use tokio::{
     task::JoinHandle,
 };
 
-use crate::board::client::{BoardServerClient, BoardServerClientError, SessionCreatedResponse};
+use crate::board::client::{
+    BoardServerClient, BoardServerClientError, HeartbeatResponse, SessionCreatedResponse,
+};
 
 #[derive(Debug)]
 pub struct BoardSession {
@@ -89,11 +91,41 @@ async fn run_heartbeat_loop(
     client: BoardServerClient,
     session_id: String,
     lease_expires_at: Arc<RwLock<DateTime<Utc>>>,
-    mut stop_rx: watch::Receiver<bool>,
+    stop_rx: watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
+    run_heartbeat_loop_with(
+        session_id,
+        lease_expires_at,
+        stop_rx,
+        move |session_id| {
+            let client = client.clone();
+            async move { client.heartbeat(&session_id).await }
+        },
+        |duration| tokio::time::sleep(duration),
+    )
+    .await
+}
+
+async fn run_heartbeat_loop_with<HeartbeatFn, HeartbeatFut, SleepFn, SleepFut>(
+    session_id: String,
+    lease_expires_at: Arc<RwLock<DateTime<Utc>>>,
+    mut stop_rx: watch::Receiver<bool>,
+    mut heartbeat: HeartbeatFn,
+    mut sleep: SleepFn,
+) -> anyhow::Result<()>
+where
+    HeartbeatFn: FnMut(String) -> HeartbeatFut,
+    HeartbeatFut: Future<Output = Result<HeartbeatResponse, BoardServerClientError>>,
+    SleepFn: FnMut(Duration) -> SleepFut,
+    SleepFut: Future<Output = ()>,
+{
     loop {
+        if *stop_rx.borrow() {
+            break;
+        }
+
         tokio::select! {
-            _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+            _ = sleep(Duration::from_secs(1)) => {}
             changed = stop_rx.changed() => {
                 if changed.is_err() || *stop_rx.borrow() {
                     break;
@@ -102,8 +134,7 @@ async fn run_heartbeat_loop(
             }
         }
 
-        let heartbeat = client
-            .heartbeat(&session_id)
+        let heartbeat = heartbeat(session_id.clone())
             .await
             .with_context(|| format!("heartbeat failed for session `{session_id}`"))?;
         log::debug!(
@@ -150,11 +181,12 @@ mod tests {
         time::Duration,
     };
 
-    use chrono::Utc;
+    use chrono::{Duration as ChronoDuration, Utc};
     use reqwest::StatusCode;
+    use tokio::sync::{RwLock, watch};
 
-    use super::acquire_session_with;
-    use crate::board::client::{BoardServerClientError, SessionCreatedResponse};
+    use super::{acquire_session_with, run_heartbeat_loop_with};
+    use crate::board::client::{BoardServerClientError, HeartbeatResponse, SessionCreatedResponse};
 
     fn created_session(id: &str) -> SessionCreatedResponse {
         SessionCreatedResponse {
@@ -267,5 +299,65 @@ mod tests {
 
         assert_eq!(result.unwrap_err().message, "board type `rk3568` not found");
         assert!(sleeps.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn heartbeat_loop_updates_lease_until_stop_signal() {
+        let initial_lease = Utc::now();
+        let first_lease = initial_lease + ChronoDuration::seconds(1);
+        let second_lease = initial_lease + ChronoDuration::seconds(2);
+        let lease = Arc::new(RwLock::new(initial_lease));
+        let (stop_tx, stop_rx) = watch::channel(false);
+        let heartbeats = Arc::new(Mutex::new(0usize));
+        let sleeps = Arc::new(Mutex::new(Vec::new()));
+
+        run_heartbeat_loop_with(
+            "demo-session".to_string(),
+            lease.clone(),
+            stop_rx,
+            {
+                let heartbeats = heartbeats.clone();
+                move |session_id| {
+                    let count = {
+                        let mut heartbeats = heartbeats.lock().unwrap();
+                        *heartbeats += 1;
+                        *heartbeats
+                    };
+                    let lease_expires_at = if count == 1 {
+                        first_lease
+                    } else {
+                        let _ = stop_tx.send(true);
+                        second_lease
+                    };
+                    async move {
+                        Ok(HeartbeatResponse {
+                            session_id,
+                            lease_expires_at,
+                        })
+                    }
+                }
+            },
+            {
+                let sleeps = sleeps.clone();
+                move |duration| {
+                    let sleeps = sleeps.clone();
+                    async move {
+                        sleeps.lock().unwrap().push(duration);
+                    }
+                }
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(*heartbeats.lock().unwrap(), 2);
+        assert_eq!(*lease.read().await, second_lease);
+        assert!(
+            sleeps
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|duration| *duration == Duration::from_secs(1))
+        );
     }
 }

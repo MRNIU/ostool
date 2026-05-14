@@ -17,7 +17,7 @@ use anyhow::{Context, anyhow, bail};
 use colored::Colorize as _;
 use tftpd::{Config, Server};
 
-use crate::{Tool, utils::PathResultExt};
+use crate::{Invocation, utils::PathResultExt};
 
 const TFTP_HPA_CONFIG_PATH: &str = "/etc/default/tftpd-hpa";
 const DEFAULT_TFTP_DIRECTORY: &str = "/srv/tftp";
@@ -159,7 +159,7 @@ pub fn relative_tftp_filename(fitimage: &Path) -> anyhow::Result<String> {
 }
 
 /// Starts a built-in TFTP server serving files from the build output directory.
-pub fn run_tftp_server(tool: &Tool) -> anyhow::Result<()> {
+pub fn run_tftp_server(tool: &Invocation) -> anyhow::Result<()> {
     let mut file_dir = tool.manifest_dir().clone();
     if let Some(elf_path) = &tool.ctx().artifacts.elf {
         file_dir = elf_path

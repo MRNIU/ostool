@@ -5,7 +5,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Tool, board::global_config::BoardGlobalConfig, run::shell_init::normalize_shell_init_config,
+    Invocation, board::global_config::BoardGlobalConfig,
+    run::shell_init::normalize_shell_init_config,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default, PartialEq, Eq)]
@@ -34,7 +35,7 @@ impl BoardRunConfig {
     }
 
     pub(crate) async fn load_or_create(
-        tool: &Tool,
+        tool: &Invocation,
         explicit_path: Option<PathBuf>,
     ) -> anyhow::Result<Self> {
         let config_path = Self::default_path(explicit_path)?;
@@ -47,7 +48,7 @@ impl BoardRunConfig {
         Ok(config)
     }
 
-    pub(crate) fn read_from_path(tool: &Tool, path: PathBuf) -> anyhow::Result<Self> {
+    pub(crate) fn read_from_path(tool: &Invocation, path: PathBuf) -> anyhow::Result<Self> {
         let mut config: Self = toml::from_str(
             &std::fs::read_to_string(&path)
                 .with_context(|| format!("failed to read board config: {}", path.display()))?,
@@ -74,7 +75,7 @@ impl BoardRunConfig {
 
     pub(crate) fn apply_overrides(
         &mut self,
-        tool: &Tool,
+        tool: &Invocation,
         board_type: Option<&str>,
         server: Option<&str>,
         port: Option<u16>,
@@ -102,7 +103,7 @@ impl BoardRunConfig {
         self.normalize("board run arguments")
     }
 
-    fn replace_strings(&mut self, tool: &Tool) -> anyhow::Result<()> {
+    fn replace_strings(&mut self, tool: &Invocation) -> anyhow::Result<()> {
         self.board_type = tool.replace_string(&self.board_type)?;
         self.dtb_file = self
             .dtb_file
@@ -188,7 +189,7 @@ impl BoardRunConfig {
 mod tests {
     use super::BoardRunConfig;
     use crate::{
-        Tool, ToolConfig,
+        Invocation, InvocationOptions,
         board::global_config::BoardGlobalConfig,
         build::config::{BuildConfig, BuildSystem, Cargo},
     };
@@ -252,7 +253,7 @@ port = 9000
 "#,
         )
         .unwrap();
-        let tool = Tool::new(Default::default()).unwrap();
+        let tool = Invocation::new(Default::default()).unwrap();
 
         config
             .apply_overrides(&tool, Some(" rk3568 "), Some(" 127.0.0.1 "), Some(7000))
@@ -285,14 +286,15 @@ timeout = 8
         )
         .unwrap();
 
-        let mut tool = Tool::new(ToolConfig {
-            manifest: Some(tmp.path().to_path_buf()),
-            ..Default::default()
-        })
+        let mut tool = Invocation::new(InvocationOptions::new(
+            Some(tmp.path().to_path_buf()),
+            None,
+            None,
+            false,
+        ))
         .unwrap();
 
-        let config = tool
-            .read_board_run_config_from_path(&config_path)
+        let config = crate::board::read_board_run_config_from_path(&mut tool, &config_path)
             .await
             .unwrap();
         assert_eq!(config.board_type, "rk3568");
@@ -337,12 +339,9 @@ dtb_file = "${package}/board.dtb"
         )
         .unwrap();
 
-        let mut tool = Tool::new(ToolConfig {
-            manifest: Some(app_dir),
-            ..Default::default()
-        })
-        .unwrap();
-        tool.ctx.build_config = Some(BuildConfig {
+        let mut tool =
+            Invocation::new(InvocationOptions::new(Some(app_dir), None, None, false)).unwrap();
+        tool.ctx_mut().build_config = Some(BuildConfig {
             system: BuildSystem::Cargo(Cargo {
                 env: HashMap::new(),
                 target: "aarch64-unknown-none".into(),
@@ -359,8 +358,7 @@ dtb_file = "${package}/board.dtb"
             }),
         });
 
-        let config = tool
-            .ensure_board_run_config_in_dir(tmp.path())
+        let config = crate::board::ensure_board_run_config_in_dir(&mut tool, tmp.path())
             .await
             .unwrap();
         let expected = kernel_dir.join("board.dtb").display().to_string();

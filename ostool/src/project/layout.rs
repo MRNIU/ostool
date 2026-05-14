@@ -1,7 +1,4 @@
-use std::{
-    env::current_dir,
-    path::{Path, PathBuf},
-};
+use std::{env::current_dir, path::PathBuf};
 
 use anyhow::{Context, anyhow, bail};
 
@@ -16,27 +13,15 @@ pub struct ProjectLayout {
 }
 
 impl ProjectLayout {
-    pub(crate) fn from_manifest_parts(
-        manifest_path: PathBuf,
-        manifest_dir: PathBuf,
-        workspace_dir: PathBuf,
-    ) -> Self {
-        Self {
-            manifest_path,
-            manifest_dir,
-            workspace_dir,
-        }
-    }
-
-    pub fn manifest_path(&self) -> &Path {
+    pub fn manifest_path(&self) -> &PathBuf {
         &self.manifest_path
     }
 
-    pub fn manifest_dir(&self) -> &Path {
+    pub fn manifest_dir(&self) -> &PathBuf {
         &self.manifest_dir
     }
 
-    pub fn workspace_dir(&self) -> &Path {
+    pub fn workspace_dir(&self) -> &PathBuf {
         &self.workspace_dir
     }
 }

@@ -1,20 +1,20 @@
 use ostool::{
-    Tool, ToolConfig, board,
+    Invocation, InvocationOptions, board,
     build::{self, config::{BuildConfig, Cargo}},
     run::{
-        qemu::{QemuConfig, RunQemuOptions},
-        uboot::{RunUbootOptions, UbootConfig},
+        qemu::{self, QemuConfig, RunQemuOptions},
+        uboot::{self, RunUbootOptions, UbootConfig},
     },
 };
 
 fn main() {
-    let tool = Tool::new(ToolConfig::default()).unwrap();
-    let _: BuildConfig = tool.default_build_config();
+    let invocation = Invocation::new(InvocationOptions::default()).unwrap();
+    let _: BuildConfig = build::default_build_config();
     let cargo = Cargo::default();
-    let qemu: QemuConfig = tool.default_qemu_config_for_cargo(&cargo);
-    let _ = tool.default_qemu_config();
-    let uboot: UbootConfig = tool.default_uboot_config();
-    let _ = tool.default_board_run_config();
+    let qemu: QemuConfig = qemu::default_qemu_config_for_cargo(&invocation, &cargo);
+    let _ = qemu::default_qemu_config(&invocation);
+    let uboot: UbootConfig = uboot::default_uboot_config();
+    let _ = board::default_board_run_config();
     let _ = RunQemuOptions::default();
     let _ = RunUbootOptions::default();
     let _ = board::RunBoardOptions::default();

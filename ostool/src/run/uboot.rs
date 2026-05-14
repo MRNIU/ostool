@@ -28,7 +28,7 @@ use tokio_util::compat::{
 use uboot_shell::UbootShell;
 
 use crate::{
-    Tool,
+    Invocation,
     board::{
         client::{
             BoardServerClient, BootConfig as RemoteBootConfig, BootProfileResponse,
@@ -121,7 +121,7 @@ impl UbootConfig {
         }
     }
 
-    fn replace_strings(&mut self, tool: &Tool) -> anyhow::Result<()> {
+    fn replace_strings(&mut self, tool: &Invocation) -> anyhow::Result<()> {
         self.dtb_file = self
             .dtb_file
             .as_deref()
@@ -213,7 +213,7 @@ impl UbootConfig {
 }
 
 impl LocalUbootConfig {
-    fn replace_strings(&mut self, tool: &Tool) -> anyhow::Result<()> {
+    fn replace_strings(&mut self, tool: &Invocation) -> anyhow::Result<()> {
         self.serial = self
             .serial
             .as_deref()
@@ -253,7 +253,7 @@ pub struct Net {
 }
 
 impl Net {
-    fn replace_strings(&mut self, tool: &Tool) -> anyhow::Result<()> {
+    fn replace_strings(&mut self, tool: &Invocation) -> anyhow::Result<()> {
         self.interface = tool.replace_string(&self.interface)?;
         self.board_ip = self
             .board_ip
@@ -284,92 +284,90 @@ pub struct RunUbootOptions {
     pub show_output: bool,
 }
 
-impl Tool {
-    pub fn default_uboot_config(&self) -> UbootConfig {
-        UbootConfig {
-            local: LocalUbootConfig {
-                serial: Some("/dev/ttyUSB0".to_string()),
-                baud_rate: Some("115200".to_string()),
-                ..Default::default()
-            },
+pub fn default_uboot_config() -> UbootConfig {
+    UbootConfig {
+        local: LocalUbootConfig {
+            serial: Some("/dev/ttyUSB0".to_string()),
+            baud_rate: Some("115200".to_string()),
             ..Default::default()
-        }
-    }
-
-    pub async fn read_uboot_config_from_path_for_cargo(
-        &mut self,
-        cargo: &crate::build::config::Cargo,
-        path: &Path,
-    ) -> anyhow::Result<UbootConfig> {
-        self.sync_cargo_context(cargo);
-        let config_path = self.replace_path_variables(path.to_path_buf())?;
-        read_uboot_config_at_path(self, config_path).await
-    }
-
-    pub async fn ensure_uboot_config_for_cargo(
-        &mut self,
-        cargo: &crate::build::config::Cargo,
-    ) -> anyhow::Result<UbootConfig> {
-        self.sync_cargo_context(cargo);
-        let workspace_dir = self.workspace_dir().clone();
-        self.ensure_uboot_config_in_dir_for_cargo(cargo, &workspace_dir)
-            .await
-    }
-
-    pub async fn ensure_uboot_config_in_dir_for_cargo(
-        &mut self,
-        cargo: &crate::build::config::Cargo,
-        dir: &Path,
-    ) -> anyhow::Result<UbootConfig> {
-        self.sync_cargo_context(cargo);
-        let dir = self.replace_path_variables(dir.to_path_buf())?;
-        ensure_uboot_config_at_path(self, dir.join(".uboot.toml"), self.default_uboot_config())
-            .await
-    }
-
-    pub async fn ensure_uboot_config_in_dir(&mut self, dir: &Path) -> anyhow::Result<UbootConfig> {
-        let dir = self.replace_path_variables(dir.to_path_buf())?;
-        ensure_uboot_config_at_path(self, dir.join(".uboot.toml"), self.default_uboot_config())
-            .await
-    }
-
-    pub async fn read_uboot_config_from_path(
-        &mut self,
-        path: &Path,
-    ) -> anyhow::Result<UbootConfig> {
-        let config_path = self.replace_path_variables(path.to_path_buf())?;
-        read_uboot_config_at_path(self, config_path).await
-    }
-
-    pub async fn run_uboot(
-        &mut self,
-        config: &UbootConfig,
-        options: RunUbootOptions,
-    ) -> anyhow::Result<()> {
-        let _ = options.show_output;
-        let mut config = config.clone();
-        config.replace_strings(self)?;
-        config.normalize("U-Boot runtime config")?;
-        let backend = LocalBackend::new(config.local.clone());
-        let mut runner = Runner::new(self, config, backend);
-        runner.run().await
-    }
-
-    pub async fn run_uboot_remote(
-        &mut self,
-        board_config: &BoardRunConfig,
-        client: BoardServerClient,
-        session: SessionCreatedResponse,
-    ) -> anyhow::Result<()> {
-        let config = UbootConfig::from_board_run_config(board_config);
-        let backend = RemoteBackend::new(client, session);
-        let mut runner = Runner::new(self, config, backend);
-        runner.run().await
+        },
+        ..Default::default()
     }
 }
 
+pub async fn read_uboot_config_from_path_for_cargo(
+    invocation: &mut Invocation,
+    cargo: &crate::build::config::Cargo,
+    path: &Path,
+) -> anyhow::Result<UbootConfig> {
+    invocation.sync_cargo_context(cargo);
+    let config_path = invocation.replace_path_variables(path.to_path_buf())?;
+    read_uboot_config_at_path(invocation, config_path).await
+}
+
+pub async fn ensure_uboot_config_for_cargo(
+    invocation: &mut Invocation,
+    cargo: &crate::build::config::Cargo,
+) -> anyhow::Result<UbootConfig> {
+    invocation.sync_cargo_context(cargo);
+    let workspace_dir = invocation.workspace_dir().clone();
+    ensure_uboot_config_in_dir_for_cargo(invocation, cargo, &workspace_dir).await
+}
+
+pub async fn ensure_uboot_config_in_dir_for_cargo(
+    invocation: &mut Invocation,
+    cargo: &crate::build::config::Cargo,
+    dir: &Path,
+) -> anyhow::Result<UbootConfig> {
+    invocation.sync_cargo_context(cargo);
+    let dir = invocation.replace_path_variables(dir.to_path_buf())?;
+    ensure_uboot_config_at_path(invocation, dir.join(".uboot.toml"), default_uboot_config()).await
+}
+
+pub async fn ensure_uboot_config_in_dir(
+    invocation: &mut Invocation,
+    dir: &Path,
+) -> anyhow::Result<UbootConfig> {
+    let dir = invocation.replace_path_variables(dir.to_path_buf())?;
+    ensure_uboot_config_at_path(invocation, dir.join(".uboot.toml"), default_uboot_config()).await
+}
+
+pub async fn read_uboot_config_from_path(
+    invocation: &mut Invocation,
+    path: &Path,
+) -> anyhow::Result<UbootConfig> {
+    let config_path = invocation.replace_path_variables(path.to_path_buf())?;
+    read_uboot_config_at_path(invocation, config_path).await
+}
+
+pub async fn run_uboot(
+    invocation: &mut Invocation,
+    config: &UbootConfig,
+    options: RunUbootOptions,
+) -> anyhow::Result<()> {
+    let _ = options.show_output;
+    let mut config = config.clone();
+    config.replace_strings(invocation)?;
+    config.normalize("U-Boot runtime config")?;
+    let backend = LocalBackend::new(config.local.clone());
+    let mut runner = Runner::new(invocation, config, backend);
+    runner.run().await
+}
+
+pub async fn run_uboot_remote(
+    invocation: &mut Invocation,
+    board_config: &BoardRunConfig,
+    client: BoardServerClient,
+    session: SessionCreatedResponse,
+) -> anyhow::Result<()> {
+    let config = UbootConfig::from_board_run_config(board_config);
+    let backend = RemoteBackend::new(client, session);
+    let mut runner = Runner::new(invocation, config, backend);
+    runner.run().await
+}
+
 async fn read_uboot_config_at_path(
-    tool: &Tool,
+    tool: &Invocation,
     config_path: PathBuf,
 ) -> anyhow::Result<UbootConfig> {
     let mut config: UbootConfig = fs::read_to_string(&config_path)
@@ -386,7 +384,7 @@ async fn read_uboot_config_at_path(
 }
 
 async fn ensure_uboot_config_at_path(
-    tool: &Tool,
+    tool: &Invocation,
     config_path: PathBuf,
     default_config: UbootConfig,
 ) -> anyhow::Result<UbootConfig> {
@@ -408,7 +406,7 @@ async fn ensure_uboot_config_at_path(
 }
 
 struct Runner<'a, B> {
-    tool: &'a mut Tool,
+    tool: &'a mut Invocation,
     config: UbootConfig,
     success_regex: Vec<regex::Regex>,
     fail_regex: Vec<regex::Regex>,
@@ -453,23 +451,23 @@ struct PreparedDtb {
 trait RunnerBackend {
     async fn resolve_runtime(
         &mut self,
-        tool: &mut Tool,
+        tool: &mut Invocation,
         config: &UbootConfig,
     ) -> anyhow::Result<ResolvedRuntime>;
     async fn prepare_dtb(
         &mut self,
-        tool: &Tool,
+        tool: &Invocation,
         config: &UbootConfig,
     ) -> anyhow::Result<PreparedDtb>;
     async fn open_console(&mut self) -> anyhow::Result<ConsoleTransport>;
-    async fn after_console_open(&mut self, tool: &Tool) -> anyhow::Result<()>;
+    async fn after_console_open(&mut self, tool: &Invocation) -> anyhow::Result<()>;
     async fn stage_fit_image(
         &mut self,
         fitimage: &Path,
         runtime: &ResolvedRuntime,
     ) -> anyhow::Result<PreparedBootArtifact>;
     async fn finish_console(&mut self) -> anyhow::Result<()>;
-    async fn after_run(&mut self, tool: &Tool) -> anyhow::Result<()>;
+    async fn after_run(&mut self, tool: &Invocation) -> anyhow::Result<()>;
 }
 
 struct LocalBackend {
@@ -496,7 +494,7 @@ impl LocalBackend {
 impl RunnerBackend for LocalBackend {
     async fn resolve_runtime(
         &mut self,
-        tool: &mut Tool,
+        tool: &mut Invocation,
         _config: &UbootConfig,
     ) -> anyhow::Result<ResolvedRuntime> {
         let baud_rate = self
@@ -594,7 +592,7 @@ impl RunnerBackend for LocalBackend {
 
     async fn prepare_dtb(
         &mut self,
-        _tool: &Tool,
+        _tool: &Invocation,
         config: &UbootConfig,
     ) -> anyhow::Result<PreparedDtb> {
         Ok(PreparedDtb {
@@ -625,7 +623,7 @@ impl RunnerBackend for LocalBackend {
         })
     }
 
-    async fn after_console_open(&mut self, tool: &Tool) -> anyhow::Result<()> {
+    async fn after_console_open(&mut self, tool: &Invocation) -> anyhow::Result<()> {
         println!("Waiting for board on power or reset...");
         if let Some(cmd) = self.config.board_reset_cmd.as_deref()
             && !cmd.trim().is_empty()
@@ -686,7 +684,7 @@ impl RunnerBackend for LocalBackend {
         Ok(())
     }
 
-    async fn after_run(&mut self, tool: &Tool) -> anyhow::Result<()> {
+    async fn after_run(&mut self, tool: &Invocation) -> anyhow::Result<()> {
         if let Some(cmd) = self.config.board_power_off_cmd.as_deref()
             && !cmd.trim().is_empty()
             && let Err(err) = tool.shell_run_cmd(cmd)
@@ -725,7 +723,7 @@ impl RemoteBackend {
 impl RunnerBackend for RemoteBackend {
     async fn resolve_runtime(
         &mut self,
-        _tool: &mut Tool,
+        _tool: &mut Invocation,
         _config: &UbootConfig,
     ) -> anyhow::Result<ResolvedRuntime> {
         let boot_profile = self
@@ -814,7 +812,7 @@ impl RunnerBackend for RemoteBackend {
 
     async fn prepare_dtb(
         &mut self,
-        tool: &Tool,
+        tool: &Invocation,
         config: &UbootConfig,
     ) -> anyhow::Result<PreparedDtb> {
         let session_dtb = self
@@ -905,7 +903,7 @@ impl RunnerBackend for RemoteBackend {
         Ok(ConsoleTransport { tx, rx })
     }
 
-    async fn after_console_open(&mut self, _tool: &Tool) -> anyhow::Result<()> {
+    async fn after_console_open(&mut self, _tool: &Invocation) -> anyhow::Result<()> {
         println!("Waiting for remote board to power on through ostool-server...");
         Ok(())
     }
@@ -958,7 +956,7 @@ impl RunnerBackend for RemoteBackend {
         Ok(())
     }
 
-    async fn after_run(&mut self, _tool: &Tool) -> anyhow::Result<()> {
+    async fn after_run(&mut self, _tool: &Invocation) -> anyhow::Result<()> {
         Ok(())
     }
 }
@@ -967,7 +965,7 @@ impl<'a, B> Runner<'a, B>
 where
     B: RunnerBackend,
 {
-    fn new(tool: &'a mut Tool, config: UbootConfig, backend: B) -> Self {
+    fn new(tool: &'a mut Invocation, config: UbootConfig, backend: B) -> Self {
         Self {
             tool,
             config,
@@ -1005,7 +1003,7 @@ where
             Byte::from(kernel_data.len())
         );
 
-        let arch = match self.tool.ctx.arch.as_ref().unwrap() {
+        let arch = match self.tool.ctx().arch.as_ref().unwrap() {
             object::Architecture::Aarch64 => "arm64",
             object::Architecture::Arm => "arm",
             object::Architecture::LoongArch64 => "loongarch64",
@@ -1102,7 +1100,7 @@ where
 
         let kernel = self
             .tool
-            .ctx
+            .ctx()
             .artifacts
             .bin
             .as_ref()
@@ -1479,7 +1477,7 @@ mod tests {
 
     use super::{LocalUbootConfig, Net, UbootConfig, build_network_boot_request, timeout_duration};
     use crate::{
-        Tool, ToolConfig,
+        Invocation, InvocationOptions,
         board::config::BoardRunConfig,
         build::config::{BuildConfig, BuildSystem, Cargo},
     };
@@ -1593,12 +1591,14 @@ timeout = 0
         std::fs::create_dir_all(tmp.path().join("src")).unwrap();
         std::fs::write(tmp.path().join("src/lib.rs"), "").unwrap();
 
-        let mut tool = Tool::new(ToolConfig {
-            manifest: Some(tmp.path().to_path_buf()),
-            ..Default::default()
-        })
+        let mut tool = Invocation::new(InvocationOptions::new(
+            Some(tmp.path().to_path_buf()),
+            None,
+            None,
+            false,
+        ))
         .unwrap();
-        tool.ctx.build_config = Some(BuildConfig {
+        tool.ctx_mut().build_config = Some(BuildConfig {
             system: BuildSystem::Cargo(Cargo {
                 env: HashMap::new(),
                 target: "aarch64-unknown-none".into(),
@@ -1722,13 +1722,17 @@ timeout = 0
         std::fs::create_dir_all(tmp.path().join("src")).unwrap();
         std::fs::write(tmp.path().join("src/lib.rs"), "").unwrap();
 
-        let mut tool = Tool::new(ToolConfig {
-            manifest: Some(tmp.path().to_path_buf()),
-            ..Default::default()
-        })
+        let mut tool = Invocation::new(InvocationOptions::new(
+            Some(tmp.path().to_path_buf()),
+            None,
+            None,
+            false,
+        ))
         .unwrap();
 
-        let config = tool.ensure_uboot_config_in_dir(tmp.path()).await.unwrap();
+        let config = super::ensure_uboot_config_in_dir(&mut tool, tmp.path())
+            .await
+            .unwrap();
 
         assert_eq!(config.local.serial.as_deref(), Some("/dev/ttyUSB0"));
         assert_eq!(config.local.baud_rate.as_deref(), Some("115200"));
@@ -1774,12 +1778,9 @@ baud_rate = "115200"
         )
         .unwrap();
 
-        let mut tool = Tool::new(ToolConfig {
-            manifest: Some(app_dir),
-            ..Default::default()
-        })
-        .unwrap();
-        tool.ctx.build_config = Some(BuildConfig {
+        let mut tool =
+            Invocation::new(InvocationOptions::new(Some(app_dir), None, None, false)).unwrap();
+        tool.ctx_mut().build_config = Some(BuildConfig {
             system: BuildSystem::Cargo(Cargo {
                 env: HashMap::new(),
                 target: "aarch64-unknown-none".into(),
@@ -1796,7 +1797,9 @@ baud_rate = "115200"
             }),
         });
 
-        let config = tool.ensure_uboot_config_in_dir(tmp.path()).await.unwrap();
+        let config = super::ensure_uboot_config_in_dir(&mut tool, tmp.path())
+            .await
+            .unwrap();
         let expected = kernel_dir.join("board.dtb").display().to_string();
         assert_eq!(config.dtb_file.as_deref(), Some(expected.as_str()));
     }

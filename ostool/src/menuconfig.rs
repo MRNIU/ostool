@@ -14,7 +14,7 @@ use clap::ValueEnum;
 use log::info;
 use tokio::fs;
 
-use crate::Tool;
+use crate::Invocation;
 use crate::build::config::BuildConfig;
 use crate::run::qemu::QemuConfig;
 use crate::run::uboot::UbootConfig;
@@ -44,7 +44,10 @@ impl MenuConfigHandler {
     /// # Errors
     ///
     /// Returns an error if the configuration cannot be loaded or saved.
-    pub async fn handle_menuconfig(tool: &mut Tool, mode: Option<MenuConfigMode>) -> Result<()> {
+    pub async fn handle_menuconfig(
+        tool: &mut Invocation,
+        mode: Option<MenuConfigMode>,
+    ) -> Result<()> {
         match mode {
             Some(MenuConfigMode::Qemu) => {
                 Self::handle_qemu_config(tool).await?;
@@ -59,16 +62,16 @@ impl MenuConfigHandler {
         Ok(())
     }
 
-    async fn handle_default_config(tool: &mut Tool) -> Result<()> {
+    async fn handle_default_config(tool: &mut Invocation) -> Result<()> {
         let config_path = tool.resolve_build_config_path(None);
-        tool.ctx_mut().build_config_path = Some(config_path.clone());
+        tool.set_build_config_path(Some(config_path.clone()));
 
         let config = jkconfig::run::<BuildConfig>(config_path.clone(), true, &tool.ui_hooks())
             .await
             .with_context(|| format!("failed to load build config: {}", config_path.display()))?;
 
         if let Some(config) = config {
-            tool.ctx_mut().build_config = Some(config);
+            tool.set_build_config(config);
         } else {
             println!("\n未更改构建配置");
         }
@@ -76,7 +79,7 @@ impl MenuConfigHandler {
         Ok(())
     }
 
-    async fn handle_qemu_config(tool: &mut Tool) -> Result<()> {
+    async fn handle_qemu_config(tool: &mut Invocation) -> Result<()> {
         info!("配置 QEMU 运行参数");
 
         let config_path = crate::run::qemu::resolve_qemu_config_path(tool, None)?;
@@ -103,7 +106,7 @@ impl MenuConfigHandler {
         Ok(())
     }
 
-    async fn handle_uboot_config(tool: &mut Tool) -> Result<()> {
+    async fn handle_uboot_config(tool: &mut Invocation) -> Result<()> {
         info!("配置 U-Boot 运行参数");
 
         println!("=== U-Boot 配置模式 ===");

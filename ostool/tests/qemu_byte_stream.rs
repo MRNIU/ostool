@@ -54,6 +54,10 @@ fn spawn_uboot_qemu() -> Result<(QemuGuard, TcpStream)> {
             "-cpu",
             "cortex-a57",
             "-nographic",
+            "-netdev",
+            "user,id=net0",
+            "-device",
+            "virtio-net-device,netdev=net0",
             "-bios",
             bin.to_str()
                 .context("u-boot.bin path contains invalid UTF-8")?,
@@ -188,7 +192,7 @@ fn run_case(success_patterns: &[&str], fail_patterns: &[&str]) -> Result<Option<
 #[test]
 fn qemu_byte_stream_success_matches_before_newline() -> Result<()> {
     let Some(outcome) = run_case(
-        &[r"Hit any key to stop autoboot:"],
+        &[r"Scanning bootdev 'fw-cfg@9020000\.bootdev':"],
         &[r"__ostool_never_fail__"],
     )?
     else {
@@ -196,11 +200,14 @@ fn qemu_byte_stream_success_matches_before_newline() -> Result<()> {
     };
 
     assert_eq!(outcome.kind, StreamMatchKind::Success);
-    assert_eq!(outcome.matched_regex, r"Hit any key to stop autoboot:");
+    assert_eq!(
+        outcome.matched_regex,
+        r"Scanning bootdev 'fw-cfg@9020000\.bootdev':"
+    );
     assert!(
         outcome
             .matched_text
-            .contains("Hit any key to stop autoboot")
+            .contains("Scanning bootdev 'fw-cfg@9020000.bootdev'")
     );
     assert!(
         outcome.tail_bytes > 0,
@@ -211,13 +218,13 @@ fn qemu_byte_stream_success_matches_before_newline() -> Result<()> {
 
 #[test]
 fn qemu_byte_stream_fail_matches_before_newline() -> Result<()> {
-    let Some(outcome) = run_case(&[r"__ostool_never_success__"], &[r"Net:\s+eth0:"])? else {
+    let Some(outcome) = run_case(&[r"__ostool_never_success__"], &[r"BOOTP broadcast 1"])? else {
         return Ok(());
     };
 
     assert_eq!(outcome.kind, StreamMatchKind::Fail);
-    assert_eq!(outcome.matched_regex, r"Net:\s+eth0:");
-    assert!(outcome.matched_text.contains("Net:"));
+    assert_eq!(outcome.matched_regex, r"BOOTP broadcast 1");
+    assert!(outcome.matched_text.contains("BOOTP broadcast 1"));
     assert!(
         outcome.tail_bytes > 0,
         "expected tail drain bytes after fail"
@@ -228,19 +235,22 @@ fn qemu_byte_stream_fail_matches_before_newline() -> Result<()> {
 #[test]
 fn qemu_byte_stream_fail_wins_when_both_match() -> Result<()> {
     let Some(outcome) = run_case(
-        &[r"Hit any key to stop autoboot:"],
-        &[r"Hit any key to stop autoboot:"],
+        &[r"Scanning bootdev 'fw-cfg@9020000\.bootdev':"],
+        &[r"Scanning bootdev 'fw-cfg@9020000\.bootdev':"],
     )?
     else {
         return Ok(());
     };
 
     assert_eq!(outcome.kind, StreamMatchKind::Fail);
-    assert_eq!(outcome.matched_regex, r"Hit any key to stop autoboot:");
+    assert_eq!(
+        outcome.matched_regex,
+        r"Scanning bootdev 'fw-cfg@9020000\.bootdev':"
+    );
     assert!(
         outcome
             .matched_text
-            .contains("Hit any key to stop autoboot")
+            .contains("Scanning bootdev 'fw-cfg@9020000.bootdev'")
     );
     assert!(
         outcome.tail_bytes > 0,

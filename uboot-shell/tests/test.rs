@@ -27,6 +27,8 @@ async fn new_uboot() -> (Child, UbootShell) {
             "-cpu",
             "cortex-a57",
             "-nographic",
+            "-net",
+            "none",
             "-bios",
             "../assets/u-boot.bin",
         ])

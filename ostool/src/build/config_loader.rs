@@ -1,3 +1,5 @@
+//! Build-config path resolution and loading for invocation setup.
+
 use std::path::PathBuf;
 
 use anyhow::{Context, bail};
@@ -16,6 +18,7 @@ pub(crate) struct LoadedBuildConfig {
     pub(crate) config: BuildConfig,
 }
 
+/// Resolves the build config path from an explicit path or workspace default.
 pub(crate) fn resolve_build_config_path(
     layout: &ProjectLayout,
     explicit_path: Option<PathBuf>,
@@ -23,6 +26,7 @@ pub(crate) fn resolve_build_config_path(
     explicit_path.unwrap_or_else(|| layout.workspace_dir().join(".build.toml"))
 }
 
+/// Loads a build config, applies UI hooks, and injects detected someboot args.
 pub(crate) async fn load_build_config(
     layout: &ProjectLayout,
     config_path: Option<PathBuf>,
@@ -45,6 +49,7 @@ pub(crate) async fn load_build_config(
     Ok(LoadedBuildConfig { path, config })
 }
 
+/// Detects additional someboot Cargo args for the selected package and target.
 fn someboot_cargo_args(layout: &ProjectLayout, cargo: &Cargo) -> anyhow::Result<Vec<String>> {
     let manifest_path = layout.workspace_dir().join("Cargo.toml");
     someboot::detect_build_config_for_package(

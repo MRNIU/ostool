@@ -1,3 +1,5 @@
+//! Cargo JSON artifact selection helpers for resolving the executable ELF output.
+
 use std::path::PathBuf;
 
 use anyhow::{anyhow, bail};
@@ -14,15 +16,18 @@ pub(crate) struct CargoBuildOutcome {
 }
 
 impl CargoBuildOutcome {
+    /// Creates a build outcome around the selected executable Cargo artifact.
     pub(crate) fn new(artifact: ResolvedCargoArtifact) -> Self {
         Self { artifact }
     }
 
+    /// Returns the selected executable artifact and its Cargo artifact directory.
     pub(crate) fn artifact(&self) -> &ResolvedCargoArtifact {
         &self.artifact
     }
 }
 
+/// Selects the executable artifact that should become ostool's runtime ELF.
 pub(crate) fn select_executable_artifact(
     executable_artifacts: &[(String, ResolvedCargoArtifact)],
     explicit_bin: Option<&str>,
@@ -85,6 +90,7 @@ mod tests {
 
     use super::{ResolvedCargoArtifact, select_executable_artifact};
 
+    /// Creates a fixture artifact under a deterministic Cargo target directory.
     fn artifact(name: &str) -> ResolvedCargoArtifact {
         let cargo_artifact_dir = PathBuf::from("/tmp/ostool-target/debug");
         ResolvedCargoArtifact {
@@ -93,6 +99,7 @@ mod tests {
         }
     }
 
+    /// Runs artifact selection with compact test inputs.
     fn select(
         artifacts: &[(String, ResolvedCargoArtifact)],
         explicit_bin: Option<&str>,
@@ -103,6 +110,7 @@ mod tests {
     }
 
     #[test]
+    /// Verifies an explicit `bin` selector has highest priority.
     fn select_executable_artifact_uses_explicit_bin_first() {
         let artifacts = vec![
             ("kernel".to_string(), artifact("kernel")),
@@ -118,6 +126,7 @@ mod tests {
     }
 
     #[test]
+    /// Verifies missing explicit binaries fail instead of falling back silently.
     fn select_executable_artifact_errors_when_explicit_bin_was_not_built() {
         let artifacts = vec![("kernel".to_string(), artifact("kernel"))];
 
@@ -130,6 +139,7 @@ mod tests {
     }
 
     #[test]
+    /// Verifies package-name binaries win before `default-run`.
     fn select_executable_artifact_prefers_package_name_before_default_run() {
         let artifacts = vec![
             ("helper".to_string(), artifact("helper")),
@@ -145,6 +155,7 @@ mod tests {
     }
 
     #[test]
+    /// Verifies `default-run` is used when no package-name binary exists.
     fn select_executable_artifact_uses_default_run_without_package_name_binary() {
         let artifacts = vec![
             ("helper".to_string(), artifact("helper")),
@@ -160,6 +171,7 @@ mod tests {
     }
 
     #[test]
+    /// Verifies a single binary artifact is accepted without extra selectors.
     fn select_executable_artifact_uses_single_binary_as_fallback() {
         let artifacts = vec![("helper".to_string(), artifact("helper"))];
 
@@ -172,6 +184,7 @@ mod tests {
     }
 
     #[test]
+    /// Verifies empty Cargo JSON executable output is reported clearly.
     fn select_executable_artifact_errors_on_empty_cargo_output() {
         let err = select(&[], None, None, "kernel").unwrap_err();
 
@@ -179,6 +192,7 @@ mod tests {
     }
 
     #[test]
+    /// Verifies multiple binary artifacts require an explicit selector.
     fn select_executable_artifact_errors_on_ambiguous_multiple_binaries() {
         let artifacts = vec![
             ("kernel-qemu".to_string(), artifact("kernel-qemu")),

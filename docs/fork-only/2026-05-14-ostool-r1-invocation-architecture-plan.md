@@ -711,16 +711,29 @@ R1 按 R1a-R1i 保守切片执行。切片编号是执行顺序，不改变最�
 
 步骤：
 
-- [ ] `main.rs` 和 `cargo-osrun` 开始创建 `Invocation`。
+- [x] `main.rs` 和 `cargo-osrun` 开始创建 `Invocation`。
 - [ ] build path 从 `Invocation` / `ActiveBuildContext` / helper functions 接线，不再通过 `Tool` 作为业务中心。
 - [ ] custom build 和 Cargo build 都通过 orchestration 层更新 `InvocationState`。
-- [ ] 把 build config path resolution 和 `jkconfig::run` 用法移到 `BuildConfigLoader` 或 module functions。
-- [ ] 把 package/features/target hooks 移到 `config_hooks.rs`。
+- [x] 把 build config path resolution 和 `jkconfig::run` 用法移到 `BuildConfigLoader` 或 module functions。
+- [x] 把 package/features/target hooks 移到 `config_hooks.rs`。
 - [ ] loader 在 CLI override 后创建 `ActiveBuildContext`。
-- [ ] relative `extra_config` 仍按 build config path parent 解析。
-- [ ] menuconfig 保持现有 hooks 行为，不顺手重写交互逻辑。
-- [ ] Run config/menu hooks 相关 tests。
-- [ ] Run `cargo check -p ostool`。
+- [x] relative `extra_config` 仍按 build config path parent 解析。
+- [x] menuconfig 保持现有 hooks 行为，不顺手重写交互逻辑。
+- [x] Run config/menu hooks 相关 tests。
+- [x] Run `cargo check -p ostool`。
+
+当前完成记录（2026-05-14）：
+
+- 已新增 `build/config_loader.rs`，build config path resolution 和 `jkconfig::run` 不再直接在 `Tool` 中实现。
+- 已新增 `build/config_hooks.rs`，package/features/target hooks 及 docs.rs/rustup target 辅助逻辑从 `Tool` 移出。
+- `Tool` 仍作为旧门面写回 `ctx.build_config_path` 和 `ctx.build_config`；ActiveBuildContext/InvocationState 接线留到 R1h 收口。
+- 已用 Docker `rust:1.90-bookworm` 验证：
+  - `cargo fmt --all -- --check`
+  - `cargo check -p ostool`
+  - `cargo test -p ostool collect_package_doc_targets`
+  - `cargo test -p ostool parse_rustup_targets`
+  - `cargo test -p ostool ui_hooks_include_system_target_hook`
+  - `cargo test -p ostool --lib`
 
 审查重点：
 

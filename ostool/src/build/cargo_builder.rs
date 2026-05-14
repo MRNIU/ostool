@@ -11,7 +11,7 @@ use cargo_metadata::{Message, PackageId};
 use colored::Colorize;
 
 use crate::{
-    Tool,
+    Invocation,
     build::{
         artifact_selector::{CargoBuildOutcome, ResolvedCargoArtifact, select_executable_artifact},
         config::{Cargo, CargoBuildProfile},
@@ -25,9 +25,9 @@ use crate::{
 /// `CargoBuilder` provides a fluent API for configuring Cargo build or run
 /// commands with custom arguments, environment variables, and build hooks.
 ///
-/// This builder is an internal implementation detail used by [`Tool`].
+/// This builder is an internal implementation detail used by [`Invocation`].
 pub struct CargoBuilder<'a> {
-    tool: &'a mut Tool,
+    tool: &'a mut Invocation,
     config: &'a Cargo,
     command: String,
     extra_args: Vec<String>,
@@ -46,7 +46,11 @@ impl<'a> CargoBuilder<'a> {
     /// * `tool` - The tool context.
     /// * `config` - The Cargo build configuration.
     /// * `config_path` - Optional path to the configuration file.
-    pub fn build(tool: &'a mut Tool, config: &'a Cargo, config_path: Option<PathBuf>) -> Self {
+    pub fn build(
+        tool: &'a mut Invocation,
+        config: &'a Cargo,
+        config_path: Option<PathBuf>,
+    ) -> Self {
         Self {
             tool,
             config,
@@ -64,13 +68,13 @@ impl<'a> CargoBuilder<'a> {
     ///
     /// When enabled, builds in debug mode and enables GDB server for QEMU.
     pub fn debug(self, debug: bool) -> Self {
-        self.tool.config.debug = debug;
+        self.tool.set_debug_enabled(debug);
         self
     }
 
     /// Creates a build command using the context's stored config path.
-    pub fn build_auto(tool: &'a mut Tool, config: &'a Cargo) -> Self {
-        let config_path = tool.ctx.build_config_path.clone();
+    pub fn build_auto(tool: &'a mut Invocation, config: &'a Cargo) -> Self {
+        let config_path = tool.ctx().build_config_path.clone();
         Self::build(tool, config, config_path)
     }
 
@@ -500,7 +504,7 @@ mod tests {
 
     use super::CargoBuilder;
     use crate::{
-        Tool, ToolConfig,
+        Invocation, InvocationOptions,
         build::artifact_selector::ResolvedCargoArtifact,
         build::config::{Cargo, CargoBuildProfile},
     };
@@ -537,10 +541,12 @@ mod tests {
             to_bin: true,
         };
 
-        let mut tool = Tool::new(ToolConfig {
-            manifest: Some(temp.path().to_path_buf()),
-            ..Default::default()
-        })
+        let mut tool = Invocation::new(InvocationOptions::new(
+            Some(temp.path().to_path_buf()),
+            None,
+            None,
+            false,
+        ))
         .unwrap();
 
         let mut builder = CargoBuilder::build(&mut tool, &config, None).skip_objcopy(true);
@@ -552,16 +558,16 @@ mod tests {
         drop(builder);
 
         let expected_elf = elf_path.canonicalize().unwrap();
-        assert_eq!(tool.ctx.artifacts.elf.as_ref(), Some(&expected_elf));
-        assert!(tool.ctx.artifacts.bin.is_none());
+        assert_eq!(tool.ctx().artifacts.elf.as_ref(), Some(&expected_elf));
+        assert!(tool.ctx().artifacts.bin.is_none());
         assert_eq!(
-            tool.ctx.artifacts.cargo_artifact_dir.as_ref(),
+            tool.ctx().artifacts.cargo_artifact_dir.as_ref(),
             Some(&cargo_artifact_dir)
         );
         assert_eq!(
-            tool.ctx.artifacts.runtime_artifact_dir.as_ref(),
+            tool.ctx().artifacts.runtime_artifact_dir.as_ref(),
             Some(&cargo_artifact_dir)
         );
-        assert!(tool.ctx.arch.is_some());
+        assert!(tool.ctx().arch.is_some());
     }
 }

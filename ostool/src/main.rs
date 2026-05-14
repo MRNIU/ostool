@@ -1,5 +1,3 @@
-//! Main ostool CLI argument parsing and command dispatch.
-
 use std::{path::PathBuf, process::ExitCode};
 
 use anyhow::Result;
@@ -9,13 +7,12 @@ use env_logger::Env;
 
 use log::info;
 use ostool::{
-    ManifestContext, Tool, ToolConfig, board,
+    Invocation, InvocationOptions, artifact, board,
     build::{self, CargoQemuRunnerArgs, CargoRunnerKind, CargoUbootRunnerArgs},
-    invocation::{Invocation, InvocationOptions},
     menuconfig::{MenuConfigHandler, MenuConfigMode},
     run::{
-        qemu::{QemuConfig, RunQemuOptions},
-        uboot::{RunUbootOptions, UbootConfig},
+        qemu::{self, QemuConfig, RunQemuOptions},
+        uboot::{self, RunUbootOptions, UbootConfig},
     },
 };
 
@@ -179,7 +176,6 @@ async fn main() -> ExitCode {
     }
 }
 
-/// Parses the CLI and dispatches the selected ostool subcommand.
 async fn try_main() -> Result<()> {
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
 
@@ -200,14 +196,14 @@ async fn try_main() -> Result<()> {
                 board::connect_board(&server, port, &args.board_type).await?;
             }
             BoardSubCommands::Run(args) => {
-                let (mut tool, manifest_ctx) = init_tool(manifest.clone())?;
+                let mut invocation = init_invocation(manifest.clone())?;
                 let mut build_config =
-                    load_build_config(&mut tool, &manifest_ctx, args.config.as_deref()).await?;
-                apply_cargo_selector(&mut tool, &mut build_config, &args.cargo_selector)?;
+                    load_build_config(&mut invocation, args.config.as_deref()).await?;
+                apply_cargo_selector(&mut invocation, &mut build_config, &args.cargo_selector)?;
                 let board_config =
-                    load_board_config(&mut tool, &manifest_ctx, args.board_config.as_deref())
-                        .await?;
-                tool.run_board(
+                    load_board_config(&mut invocation, args.board_config.as_deref()).await?;
+                board::run_board(
+                    &mut invocation,
                     &build_config,
                     &board_config,
                     board::RunBoardOptions {
@@ -226,11 +222,10 @@ async fn try_main() -> Result<()> {
             config,
             cargo_selector,
         } => {
-            let (mut tool, manifest_ctx) = init_tool(manifest)?;
-            let mut build_config =
-                load_build_config(&mut tool, &manifest_ctx, config.as_deref()).await?;
-            apply_cargo_selector(&mut tool, &mut build_config, &cargo_selector)?;
-            tool.build_with_config(&build_config).await?;
+            let mut invocation = init_invocation(manifest)?;
+            let mut build_config = load_build_config(&mut invocation, config.as_deref()).await?;
+            apply_cargo_selector(&mut invocation, &mut build_config, &cargo_selector)?;
+            build::build_with_config(&mut invocation, &build_config).await?;
         }
         SubCommands::Run { command } => match command {
             RunSubCommands::Qemu(args) => {
@@ -242,16 +237,20 @@ async fn try_main() -> Result<()> {
                 let debug = qemu.debug;
                 let dtb_dump = qemu.dtb_dump;
 
-                let (mut tool, manifest_ctx) = init_tool(manifest.clone())?;
+                let mut invocation = init_invocation(manifest.clone())?;
                 let mut build_config =
-                    load_build_config(&mut tool, &manifest_ctx, config.as_deref()).await?;
-                apply_cargo_selector(&mut tool, &mut build_config, &cargo_selector)?;
+                    load_build_config(&mut invocation, config.as_deref()).await?;
+                apply_cargo_selector(&mut invocation, &mut build_config, &cargo_selector)?;
                 match &build_config.system {
                     build::config::BuildSystem::Cargo(config) => {
                         let qemu_config = match qemu.qemu_config.as_deref() {
                             Some(path) => Some(
-                                tool.read_qemu_config_from_path_for_cargo(config, path)
-                                    .await?,
+                                qemu::read_qemu_config_from_path_for_cargo(
+                                    &mut invocation,
+                                    config,
+                                    path,
+                                )
+                                .await?,
                             ),
                             None => None,
                         };
@@ -261,19 +260,20 @@ async fn try_main() -> Result<()> {
                             dtb_dump,
                             show_output: true,
                         });
-                        tool.cargo_run(config, &kind).await?;
+                        build::cargo_run(&mut invocation, config, &kind).await?;
                     }
                     build::config::BuildSystem::Custom(custom_cfg) => {
-                        tool.build_with_config(&build_config).await?;
-                        tool.prepare_elf_artifact(
+                        build::build_with_config(&mut invocation, &build_config).await?;
+                        artifact::prepare_elf_artifact(
+                            &mut invocation,
                             custom_cfg.elf_path.clone().into(),
                             custom_cfg.to_bin,
                         )
                         .await?;
                         let qemu_config =
-                            load_qemu_config(&mut tool, &manifest_ctx, qemu.qemu_config.as_deref())
-                                .await?;
-                        tool.run_qemu(
+                            load_qemu_config(&mut invocation, qemu.qemu_config.as_deref()).await?;
+                        qemu::run_qemu(
+                            &mut invocation,
                             &qemu_config,
                             RunQemuOptions {
                                 dtb_dump,
@@ -291,16 +291,20 @@ async fn try_main() -> Result<()> {
                     uboot,
                 } = args;
 
-                let (mut tool, manifest_ctx) = init_tool(manifest.clone())?;
+                let mut invocation = init_invocation(manifest.clone())?;
                 let mut build_config =
-                    load_build_config(&mut tool, &manifest_ctx, config.as_deref()).await?;
-                apply_cargo_selector(&mut tool, &mut build_config, &cargo_selector)?;
+                    load_build_config(&mut invocation, config.as_deref()).await?;
+                apply_cargo_selector(&mut invocation, &mut build_config, &cargo_selector)?;
                 match &build_config.system {
                     build::config::BuildSystem::Cargo(config) => {
                         let uboot_config = match uboot.uboot_config.as_deref() {
                             Some(path) => Some(
-                                tool.read_uboot_config_from_path_for_cargo(config, path)
-                                    .await?,
+                                uboot::read_uboot_config_from_path_for_cargo(
+                                    &mut invocation,
+                                    config,
+                                    path,
+                                )
+                                .await?,
                             ),
                             None => None,
                         };
@@ -308,75 +312,62 @@ async fn try_main() -> Result<()> {
                             uboot: uboot_config,
                             show_output: true,
                         });
-                        tool.cargo_run(config, &kind).await?;
+                        build::cargo_run(&mut invocation, config, &kind).await?;
                     }
                     build::config::BuildSystem::Custom(custom_cfg) => {
-                        tool.build_with_config(&build_config).await?;
-                        tool.prepare_elf_artifact(
+                        build::build_with_config(&mut invocation, &build_config).await?;
+                        artifact::prepare_elf_artifact(
+                            &mut invocation,
                             custom_cfg.elf_path.clone().into(),
                             custom_cfg.to_bin,
                         )
                         .await?;
-                        let uboot_config = load_uboot_config(
-                            &mut tool,
-                            &manifest_ctx,
-                            uboot.uboot_config.as_deref(),
+                        let uboot_config =
+                            load_uboot_config(&mut invocation, uboot.uboot_config.as_deref())
+                                .await?;
+                        uboot::run_uboot(
+                            &mut invocation,
+                            &uboot_config,
+                            RunUbootOptions { show_output: true },
                         )
                         .await?;
-                        tool.run_uboot(&uboot_config, RunUbootOptions { show_output: true })
-                            .await?;
                     }
                 }
             }
         },
         SubCommands::Menuconfig { mode } => {
-            let (mut tool, _) = init_tool(manifest)?;
-            MenuConfigHandler::handle_menuconfig(&mut tool, mode).await?;
+            let mut invocation = init_invocation(manifest)?;
+            MenuConfigHandler::handle_menuconfig(&mut invocation, mode).await?;
         }
     }
 
     Ok(())
 }
 
-/// Creates the legacy tool facade from an optional manifest argument.
-fn init_tool(manifest_arg: Option<PathBuf>) -> Result<(Tool, ManifestContext)> {
-    let invocation = Invocation::new(InvocationOptions::new(
-        manifest_arg.clone(),
-        None,
-        None,
-        false,
-    ))?;
-    let manifest = ManifestContext::from(invocation.project_layout().clone());
-    info!("Using manifest {}", manifest.manifest_path.display());
-
-    let tool = Tool::from_invocation(
-        ToolConfig {
-            manifest: Some(manifest.manifest_path.clone()),
-            ..Default::default()
-        },
-        invocation,
+fn init_invocation(manifest_arg: Option<PathBuf>) -> Result<Invocation> {
+    let invocation = Invocation::new(InvocationOptions::new(manifest_arg, None, None, false))?;
+    info!(
+        "Using manifest {}",
+        invocation.project_layout().manifest_path().display()
     );
-    Ok((tool, manifest))
+    Ok(invocation)
 }
 
-/// Loads the build config from an explicit path or workspace default.
 async fn load_build_config(
-    tool: &mut Tool,
-    manifest: &ManifestContext,
+    tool: &mut Invocation,
     config_path: Option<&std::path::Path>,
 ) -> Result<build::config::BuildConfig> {
     match config_path {
-        Some(path) => tool.load_build_config_from_path(path, false).await,
+        Some(path) => build::load_build_config_from_path(tool, path, false).await,
         None => {
-            tool.load_build_config_from_dir(&manifest.workspace_dir, false)
-                .await
+            let workspace_dir = tool.workspace_dir().clone();
+            build::load_build_config_from_dir(tool, &workspace_dir, false).await
         }
     }
 }
 
-/// Applies `--package` and `--bin` overrides to Cargo build configs.
 fn apply_cargo_selector(
-    tool: &mut Tool,
+    tool: &mut Invocation,
     build_config: &mut build::config::BuildConfig,
     selector: &CargoSelectorArgs,
 ) -> Result<()> {
@@ -395,56 +386,49 @@ fn apply_cargo_selector(
         cargo.bin = Some(bin.clone());
     }
 
-    tool.ctx_mut().build_config = Some(build_config.clone());
+    tool.set_build_config(build_config.clone());
     Ok(())
 }
 
-/// Loads QEMU config from an explicit path or workspace default.
 async fn load_qemu_config(
-    tool: &mut Tool,
-    manifest: &ManifestContext,
+    tool: &mut Invocation,
     config_path: Option<&std::path::Path>,
 ) -> Result<QemuConfig> {
     match config_path {
-        Some(path) => tool.read_qemu_config_from_path(path).await,
+        Some(path) => qemu::read_qemu_config_from_path(tool, path).await,
         None => {
-            tool.ensure_qemu_config_in_dir(&manifest.workspace_dir)
-                .await
+            let workspace_dir = tool.workspace_dir().clone();
+            qemu::ensure_qemu_config_in_dir(tool, &workspace_dir).await
         }
     }
 }
 
-/// Loads U-Boot config from an explicit path or workspace default.
 async fn load_uboot_config(
-    tool: &mut Tool,
-    manifest: &ManifestContext,
+    tool: &mut Invocation,
     config_path: Option<&std::path::Path>,
 ) -> Result<UbootConfig> {
     match config_path {
-        Some(path) => tool.read_uboot_config_from_path(path).await,
+        Some(path) => uboot::read_uboot_config_from_path(tool, path).await,
         None => {
-            tool.ensure_uboot_config_in_dir(&manifest.workspace_dir)
-                .await
+            let workspace_dir = tool.workspace_dir().clone();
+            uboot::ensure_uboot_config_in_dir(tool, &workspace_dir).await
         }
     }
 }
 
-/// Loads board-run config from an explicit path or workspace default.
 async fn load_board_config(
-    tool: &mut Tool,
-    manifest: &ManifestContext,
+    tool: &mut Invocation,
     config_path: Option<&std::path::Path>,
 ) -> Result<board::config::BoardRunConfig> {
     match config_path {
-        Some(path) => tool.read_board_run_config_from_path(path).await,
+        Some(path) => board::read_board_run_config_from_path(tool, path).await,
         None => {
-            tool.ensure_board_run_config_in_dir(&manifest.workspace_dir)
-                .await
+            let workspace_dir = tool.workspace_dir().clone();
+            board::ensure_board_run_config_in_dir(tool, &workspace_dir).await
         }
     }
 }
 
-/// Prints CLI errors with a structured trace.
 fn report_error(err: &anyhow::Error) {
     log::error!("{err:#}");
     log::error!("Trace:\n{err:?}");
@@ -459,7 +443,6 @@ mod tests {
 
     use super::{BoardArgs, BoardSubCommands, Cli, RunSubCommands, SubCommands};
 
-    /// Verifies build parsing accepts manifest, config, package, and bin overrides.
     #[test]
     fn parse_build_with_manifest_config_package_and_bin() {
         let cli = Cli::try_parse_from([
@@ -496,7 +479,6 @@ mod tests {
         }
     }
 
-    /// Verifies QEMU run parsing accepts build, QEMU, and Cargo selector args.
     #[test]
     fn parse_run_qemu_with_build_qemu_and_cargo_selector_args() {
         let cli = Cli::try_parse_from([
@@ -537,7 +519,6 @@ mod tests {
         }
     }
 
-    /// Verifies U-Boot run parsing accepts build, U-Boot, and Cargo selector args.
     #[test]
     fn parse_run_uboot_with_build_uboot_and_cargo_selector_args() {
         let cli = Cli::try_parse_from([
@@ -660,7 +641,6 @@ mod tests {
         }
     }
 
-    /// Verifies board run parsing accepts build and board config overrides.
     #[test]
     fn parse_board_run_with_build_and_board_config() {
         let cli = Cli::try_parse_from([
@@ -701,7 +681,6 @@ mod tests {
         }
     }
 
-    /// Verifies board run parsing accepts Cargo package and bin selectors.
     #[test]
     fn parse_board_run_with_cargo_selector_args() {
         let cli = Cli::try_parse_from([

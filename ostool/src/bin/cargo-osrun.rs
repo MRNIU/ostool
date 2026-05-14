@@ -11,10 +11,11 @@ use clap::{Parser, Subcommand};
 use colored::Colorize as _;
 use log::debug;
 use ostool::{
-    ManifestContext, Tool, ToolConfig,
-    invocation::{Invocation, InvocationOptions},
-    logger,
-    run::{qemu::RunQemuOptions, uboot::RunUbootOptions},
+    Invocation, InvocationOptions, artifact, logger,
+    run::{
+        qemu::{self, RunQemuOptions},
+        uboot::{self, RunUbootOptions},
+    },
 };
 
 #[derive(Debug, Parser, Clone)]
@@ -113,19 +114,18 @@ async fn try_main() -> anyhow::Result<()> {
     let bin_dir: Option<PathBuf> = args.bin_dir.clone().map(PathBuf::from);
     let build_dir: Option<PathBuf> = args.build_dir.clone().map(PathBuf::from);
 
-    let invocation = Invocation::new(InvocationOptions::new(
+    let mut invocation = Invocation::new(InvocationOptions::new(
         Some(manifest),
         build_dir.clone(),
         bin_dir.clone(),
         args.debug,
     ))?;
-    let manifest = ManifestContext::from(invocation.project_layout().clone());
-    let log_path = logger::init_file_logger(&manifest.workspace_dir)?;
+    let log_path = logger::init_file_logger(invocation.workspace_dir())?;
     let _ = LOG_PATH.set(log_path.clone());
     debug!(
         "Logging initialized at {} for manifest {}",
         log_path.display(),
-        manifest.manifest_path.display()
+        invocation.project_layout().manifest_path().display()
     );
     debug!("Parsed arguments: {:#?}", args);
 
@@ -133,28 +133,19 @@ async fn try_main() -> anyhow::Result<()> {
         exit(0);
     }
 
-    let mut tool = Tool::from_invocation(
-        ToolConfig {
-            manifest: Some(manifest.manifest_path.clone()),
-            build_dir,
-            bin_dir,
-            debug: args.debug,
-        },
-        invocation,
-    );
-
-    tool.prepare_elf_artifact(args.elf, args.to_bin).await?;
+    artifact::prepare_elf_artifact(&mut invocation, args.elf, args.to_bin).await?;
 
     match args.command {
         Some(SubCommands::Uboot(_)) => {
             let config = match args.config.as_deref() {
-                Some(path) => tool.read_uboot_config_from_path(path).await?,
+                Some(path) => uboot::read_uboot_config_from_path(&mut invocation, path).await?,
                 None => {
-                    tool.ensure_uboot_config_in_dir(&manifest.workspace_dir)
-                        .await?
+                    let workspace_dir = invocation.workspace_dir().clone();
+                    uboot::ensure_uboot_config_in_dir(&mut invocation, &workspace_dir).await?
                 }
             };
-            tool.run_uboot(
+            uboot::run_uboot(
+                &mut invocation,
                 &config,
                 RunUbootOptions {
                     show_output: args.show_output,
@@ -164,13 +155,14 @@ async fn try_main() -> anyhow::Result<()> {
         }
         None => {
             let config = match args.config.as_deref() {
-                Some(path) => tool.read_qemu_config_from_path(path).await?,
+                Some(path) => qemu::read_qemu_config_from_path(&mut invocation, path).await?,
                 None => {
-                    tool.ensure_qemu_config_in_dir(&manifest.workspace_dir)
-                        .await?
+                    let workspace_dir = invocation.workspace_dir().clone();
+                    qemu::ensure_qemu_config_in_dir(&mut invocation, &workspace_dir).await?
                 }
             };
-            tool.run_qemu(
+            qemu::run_qemu(
+                &mut invocation,
                 &config,
                 RunQemuOptions {
                     dtb_dump: args.dtb_dump,

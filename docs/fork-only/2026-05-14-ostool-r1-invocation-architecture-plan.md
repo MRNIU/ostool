@@ -536,17 +536,17 @@ R1 按 R1a-R1i 保守切片执行。切片编号是执行顺序，不改变最�
 
 步骤：
 
-- [ ] 把 manifest path resolution 移到 `project/layout.rs`。
-- [ ] 把 `ManifestContext` 语义重命名为 `ProjectLayout`。
-- [ ] 把 package metadata lookup 移到 `project/metadata.rs`。
-- [ ] 引入 `InvocationOptions`、`InvocationState` 和 `Invocation`。
-- [ ] 保持 `ProjectLayout`、`InvocationOptions`、`InvocationState`、`Invocation` 字段 private。
-- [ ] 引入 `ActiveBuildContext`、`ActiveCargoBuild`、`ActiveCustomBuild`、`VariableScope` 和 `ProcessContext`。
-- [ ] 先让现有 `Tool` 门面调用这些新 helper；本切片不要求删除 `Tool`。
-- [ ] 确认 `Tool` 没有新增业务职责，只是转发到新 helper。
-- [ ] 用 invocation constructor 替代 `init_tool()`。
-- [ ] 替换 `cargo-osrun` 里的 `resolve_manifest_context()` 用法。
-- [ ] Run `cargo check -p ostool`。
+- [x] 把 manifest path resolution 移到 `project/layout.rs`。
+- [x] 把 `ManifestContext` 语义重命名为 `ProjectLayout`。
+- [x] 把 package metadata lookup 移到 `project/metadata.rs`。
+- [x] 引入 `InvocationOptions`、`InvocationState` 和 `Invocation`。
+- [x] 保持 `ProjectLayout`、`InvocationOptions`、`InvocationState`、`Invocation` 字段 private。
+- [x] 引入 `ActiveBuildContext`、`ActiveCargoBuild`、`ActiveCustomBuild`、`VariableScope` 和 `ProcessContext`。
+- [x] 先让现有 `Tool` 门面调用这些新 helper；本切片不要求删除 `Tool`。
+- [x] 确认 `Tool` 没有新增业务职责，只是转发到新 helper。
+- [x] 用 invocation constructor 替代 `init_tool()`。
+- [x] 替换 `cargo-osrun` 里的 `resolve_manifest_context()` 用法。
+- [x] Run `cargo check -p ostool`。
 
 审查重点：
 
@@ -571,15 +571,25 @@ R1 按 R1a-R1i 保守切片执行。切片编号是执行顺序，不改变最�
 
 步骤：
 
-- [ ] 把 `${workspace}`、`${workspaceFolder}`、`${package}`、`${tmpDir}`、`${env:VAR}` 替换移到 `project::variables`。
-- [ ] variable expansion 接收 `&VariableScope`；无 active build 时从 `ProjectLayout` 派生 default scope。
-- [ ] 引入 `ProcessContext`，显式保存 workdir、workspace_dir、VariableScope、kernel_elf。
-- [ ] 把 command construction 移到 `process` 模块；只有函数数量和职责膨胀时才拆 `process::command`。
-- [ ] 把 shell command execution 移到 `process` 模块；只有函数数量和职责膨胀时才拆 `process::shell`。
+- [x] 把 `${workspace}`、`${workspaceFolder}`、`${package}`、`${tmpDir}`、`${env:VAR}` 替换移到 `project::variables`。
+- [x] variable expansion 接收 `&VariableScope`；无 active build 时从 `ProjectLayout` 派生 default scope。
+- [x] 引入 `ProcessContext`，显式保存 workdir、workspace_dir、VariableScope、kernel_elf。
+- [x] 把 command construction 移到 `process` 模块；只有函数数量和职责膨胀时才拆 `process::command`。
+- [x] 把 shell command execution 移到 `process` 模块；只有函数数量和职责膨胀时才拆 `process::shell`。
 - [ ] 替换 `Tool::replace_string`、`Tool::replace_path_variables`、`Tool::command`、`Tool::shell_run_cmd` call sites。
-- [ ] 保持 shell hook 的 `KERNEL_ELF` 注入语义。
-- [ ] Run variable/process tests。
-- [ ] Run `cargo check -p ostool`。
+- [x] 保持 shell hook 的 `KERNEL_ELF` 注入语义。
+- [x] Run variable/process tests。
+- [x] Run `cargo check -p ostool`。
+
+当前完成记录（2026-05-14）：
+
+- 已新增 `project`、`process`、`invocation` 模块，`Tool` 对 manifest/metadata/变量/命令执行的逻辑已转发到新 helper。
+- 主 CLI 的 `init_tool()` 和 `cargo-osrun` 已改用 `Invocation` constructor 建立项目布局。
+- runner/board/config 调用点仍通过 `Tool` 兼容门面进入新 helper；直接替换 call site 留到 R1g/R1h 清理。
+- 已用 Docker `rust:1.90-bookworm` 验证：
+  - `cargo fmt --all -- --check`
+  - `cargo check -p ostool`
+  - `cargo test -p ostool --lib`
 
 审查重点：
 

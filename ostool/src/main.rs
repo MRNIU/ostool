@@ -9,8 +9,8 @@ use log::info;
 use ostool::{
     ManifestContext, Tool, ToolConfig, board,
     build::{self, CargoQemuRunnerArgs, CargoRunnerKind, CargoUbootRunnerArgs},
+    invocation::{Invocation, InvocationOptions},
     menuconfig::{MenuConfigHandler, MenuConfigMode},
-    resolve_manifest_context,
     run::{
         qemu::{QemuConfig, RunQemuOptions},
         uboot::{RunUbootOptions, UbootConfig},
@@ -336,13 +336,22 @@ async fn try_main() -> Result<()> {
 }
 
 fn init_tool(manifest_arg: Option<PathBuf>) -> Result<(Tool, ManifestContext)> {
-    let manifest = resolve_manifest_context(manifest_arg.clone())?;
+    let invocation = Invocation::new(InvocationOptions::new(
+        manifest_arg.clone(),
+        None,
+        None,
+        false,
+    ))?;
+    let manifest = ManifestContext::from(invocation.project_layout().clone());
     info!("Using manifest {}", manifest.manifest_path.display());
 
-    let tool = Tool::new(ToolConfig {
-        manifest: Some(manifest.manifest_path.clone()),
-        ..Default::default()
-    })?;
+    let tool = Tool::from_invocation(
+        ToolConfig {
+            manifest: Some(manifest.manifest_path.clone()),
+            ..Default::default()
+        },
+        invocation,
+    );
     Ok((tool, manifest))
 }
 

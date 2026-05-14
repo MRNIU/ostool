@@ -9,7 +9,9 @@ use clap::{Parser, Subcommand};
 use colored::Colorize as _;
 use log::debug;
 use ostool::{
-    Tool, ToolConfig, logger, resolve_manifest_context,
+    ManifestContext, Tool, ToolConfig,
+    invocation::{Invocation, InvocationOptions},
+    logger,
     run::{qemu::RunQemuOptions, uboot::RunUbootOptions},
 };
 
@@ -105,7 +107,16 @@ async fn try_main() -> anyhow::Result<()> {
 
     let manifest_dir: PathBuf = env::var("CARGO_MANIFEST_DIR")?.into();
     let manifest = manifest_dir.join("Cargo.toml");
-    let manifest = resolve_manifest_context(Some(manifest))?;
+    let bin_dir: Option<PathBuf> = args.bin_dir.clone().map(PathBuf::from);
+    let build_dir: Option<PathBuf> = args.build_dir.clone().map(PathBuf::from);
+
+    let invocation = Invocation::new(InvocationOptions::new(
+        Some(manifest),
+        build_dir.clone(),
+        bin_dir.clone(),
+        args.debug,
+    ))?;
+    let manifest = ManifestContext::from(invocation.project_layout().clone());
     let log_path = logger::init_file_logger(&manifest.workspace_dir)?;
     let _ = LOG_PATH.set(log_path.clone());
     debug!(
@@ -119,15 +130,15 @@ async fn try_main() -> anyhow::Result<()> {
         exit(0);
     }
 
-    let bin_dir: Option<PathBuf> = args.bin_dir.map(PathBuf::from);
-    let build_dir: Option<PathBuf> = args.build_dir.map(PathBuf::from);
-
-    let mut tool = Tool::new(ToolConfig {
-        manifest: Some(manifest.manifest_path),
-        build_dir,
-        bin_dir,
-        debug: args.debug,
-    })?;
+    let mut tool = Tool::from_invocation(
+        ToolConfig {
+            manifest: Some(manifest.manifest_path.clone()),
+            build_dir,
+            bin_dir,
+            debug: args.debug,
+        },
+        invocation,
+    );
 
     tool.prepare_elf_artifact(args.elf, args.to_bin).await?;
 

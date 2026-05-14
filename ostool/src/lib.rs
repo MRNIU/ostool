@@ -44,6 +44,9 @@ pub mod board;
 /// Application context and state management.
 pub mod ctx;
 
+/// Invocation inputs and mutable runtime state.
+pub mod invocation;
+
 /// Custom file logger for ostool.
 ///
 /// Provides a file-based logger that writes all log output to
@@ -57,6 +60,12 @@ mod tool;
 /// Similar to Linux kernel's menuconfig, allows users to configure
 /// build options through an interactive terminal interface.
 pub mod menuconfig;
+
+/// Project layout, metadata, and variable expansion helpers.
+pub mod project;
+
+/// Process construction and shell hook helpers.
+pub mod process;
 
 /// Runtime execution modules for QEMU, TFTP, and U-Boot.
 ///

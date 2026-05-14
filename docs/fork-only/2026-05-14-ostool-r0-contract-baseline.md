@@ -9,6 +9,27 @@
 - 用当前 CI 命令建立 Docker 验证基线，避免只靠静态阅读做结论。
 - 记录真实缺口：哪些已有测试覆盖，哪些只能在后续阶段先抽 seam 再补 contract test。
 
+## 阶段边界和完成判据
+
+R0 是文档阶段。它的目标是把后续重构需要遵守的判断边界写清楚，不要求在本阶段补齐所有测试，
+也不要求调整生产代码。
+
+R0 完成条件：
+
+1. 现有 build/run/board 相关行为已经按硬兼容、可废弃、内部实现和文档漂移分类。
+2. 每个 contract 至少记录当前代码真相、已有覆盖和缺口，不能只写“保持现有行为”。
+3. Docker/CI 基线记录必须区分已通过、环境型失败、测试卡住和未验证硬件行为。
+4. CLI、`cargo-osrun`、配置字段、public API、artifact state、runner 和 board session 边界都有
+   明确归属，后续 R1-R6 不需要重新争论它们是不是用户可见行为。
+5. 后续补测只作为进入对应重构阶段前的护栏，不作为 R0 文档完成条件。
+
+R0 明确不做：
+
+- 不移动 `Tool`、runner、build lifecycle 或 artifact state 代码。
+- 不新增、删除或废弃 CLI 参数、配置字段、Cargo runner 参数或 Rust public API。
+- 不用源文本扫描伪造 QEMU/FIT/execution result contract 测试。
+- 不把 README 或旧计划中的漂移内容当作当前代码 contract。
+
 ## Docker 复核记录
 
 复核环境：
@@ -60,14 +81,14 @@ cargo test --target x86_64-unknown-linux-gnu -- --nocapture
 
 | 区域 | 等级 | 当前代码真相 | 已有覆盖 | R0 缺口和后续处理 |
 |---|---|---|---|---|
-| CLI 入口 | 硬兼容 | 主 CLI 入口是 `ostool build`、`ostool run qemu`、`ostool run uboot`、`ostool board ...`、`ostool menuconfig`，全局 manifest 参数是 `--manifest` | `ostool/src/main.rs` 目前主要覆盖 board 子命令解析 | R0/R1 前补或至少记录 `build`、`run qemu`、`run uboot`、`--manifest`、`--package`、`--bin` 的 parser contract |
-| `cargo-osrun` | 硬兼容 | 独立 binary，解析 Cargo runner 传入的 `program`、`elf`、`--to-bin`、`--config`、`--no-run`、`--debug`、`--dtb-dump`，默认跑 QEMU，`uboot` 子命令跑 U-Boot | 当前没有同等 parser contract test | 不能把它当成主 CLI 的内部细节；R0/R6 需要保留入口语义 |
+| CLI 入口 | 硬兼容 | 主 CLI 入口是 `ostool build`、`ostool run qemu`、`ostool run uboot`、`ostool board ...`、`ostool menuconfig`，全局 manifest 参数是 `--manifest` | `ostool/src/main.rs` 目前主要覆盖 board 子命令解析 | R0 记录入口边界；R1 前建议补 `build`、`run qemu`、`run uboot`、`--manifest`、`--package`、`--bin` 的 parser contract |
+| `cargo-osrun` | 硬兼容 | 独立 binary，解析 Cargo runner 传入的 `program`、`elf`、`--to-bin`、`--config`、`--no-run`、`--debug`、`--dtb-dump`，默认跑 QEMU，`uboot` 子命令跑 U-Boot | 当前没有同等 parser contract test | R0 记录入口语义；R1 前建议补 parser contract；R6 仍要保留该入口语义 |
 | Cargo build config | 硬兼容 | `system.Cargo` 支持 `package`、`bin`、`target`、`features`、`log`、`env`、`extra_config`、`profile`、`args`、`pre_build_cmds`、`post_build_cmds`、`to_bin` | 部分单元测试和集成命令覆盖 | R1 只移动代码；R2 才允许重整 build lifecycle |
-| Cargo executable artifact 选择 | 硬兼容 | 通过 Cargo JSON message 选择 executable artifact；显式 `bin` 优先，其次 package 同名 bin、`default-run`、单一 bin，多 bin 无法判断时报错 | 行为在 `cargo_builder.rs` 私有函数里，缺少直接 contract test | R0 或 R2 第一笔补测试；这是 PR-03 debug artifacts 的前置边界 |
-| Cargo profile/log-level feature | 硬兼容 | `profile` 未配置时，`ToolConfig.debug` 决定 Debug/Release；`system.Cargo.log` 会按 effective profile 生成 `log/max_level_*` 或 `log/release_max_level_*` feature | 目前缺针对 effective profile 的测试 | R2 改 build plan 前必须补 contract |
+| Cargo executable artifact 选择 | 硬兼容 | 通过 Cargo JSON message 选择 executable artifact；显式 `bin` 优先，其次 package 同名 bin、`default-run`、单一 bin，多 bin 无法判断时报错 | 行为在 `cargo_builder.rs` 私有函数里，缺少直接 contract test | R0 记录选择语义；R2 第一笔补测试，这是 PR-03 debug artifacts 的前置边界 |
+| Cargo profile/log-level feature | 硬兼容 | `profile` 未配置时，`ToolConfig.debug` 决定 Debug/Release；`system.Cargo.log` 会按 effective profile 生成 `log/max_level_*` 或 `log/release_max_level_*` feature | 目前缺针对 effective profile 的测试 | R0 记录语义；R2 改 build plan 前必须补 contract |
 | someboot 自动参数 | 已知缺陷/内部实现 | build config 准备阶段和 Cargo command 构造阶段都有注入入口，存在重复追加风险 | 没有独立 contract | R0 记录，R1 保持现状，R2 收敛到唯一注入点 |
 | Custom build: `ostool build` | 硬兼容 | `build_with_config()` 遇到 `system.Custom` 只执行 `build_cmd` | CI build 命令覆盖编译，不覆盖具体 custom 流程 | 不要把 run/board 的 runtime artifact 行为错误并入 `ostool build` |
-| Custom build: run/board runtime | 硬兼容 | `prepare_runtime_artifacts()` 遇到 `system.Custom` 会执行 `build_cmd`，再按 `elf_path` 和 `to_bin` 准备 runtime artifact | 缺最小测试 | R2/R4 前保持行为；如果未来避免重复 build，需要新增可见迁移路径 |
+| Custom build: run/board runtime | 硬兼容 | `prepare_runtime_artifacts()` 遇到 `system.Custom` 会执行 `build_cmd`，再按 `elf_path` 和 `to_bin` 准备 runtime artifact | 缺最小测试 | R0 记录与 `ostool build` 的差异；R2/R4 前保持行为；如果未来避免重复 build，需要新增可见迁移路径 |
 | Artifact state | 硬兼容到可废弃过渡 | `OutputArtifacts` 当前只有 `elf`、`bin`、`cargo_artifact_dir`、`runtime_artifact_dir`，没有区分 Cargo 原始产物、runner runtime 产物和未来 debug artifacts | public API trybuild 只覆盖部分构造方式 | R2 新增清晰状态模型时，旧字段先映射或 deprecated |
 | QEMU runner | 硬兼容 | `config.to_bin` 为真时生成 `.bin`；默认 machine 由 arch 推导；`--dtb-dump` 写 `target/qemu.dtb`；非 UEFI 默认 `-kernel`，优先 `bin` 后 `elf`；UEFI pflash/ESP 路径关闭 kernel loader | 有 QEMU byte-stream 集成测试，但没有 command-plan contract | 当前命令组装和 spawn 耦合，R0 不适合硬写 plan test；R5 第一笔先抽 command plan seam |
 | U-Boot runner/FIT | 硬兼容到可扩展 | 当前 U-Boot runner 会准备 runtime `.bin` 并生成 `image.fit`；默认 FIT kernel component 偏 Linux/raw-bin 语义 | 有现有单元/集成覆盖，但 SimpleKernel 需要的新 FIT 语义未覆盖 | R3 抽 FIT 服务；旧默认继续映射，新配置走新增接口 |
@@ -93,18 +114,30 @@ cargo test --target x86_64-unknown-linux-gnu -- --nocapture
 7. 全量 `cargo test` 当前不是 clean baseline：`ostool-server` 的 abrupt WebSocket drop lifecycle
    集成测试会卡住，需要作为测试稳定性 follow-up，而不是在 R0 文档里隐藏。
 
-## R0 最小补测建议
+## 后续补测护栏
 
-优先级从高到低：
+以下内容不是 R0 文档完成条件，也不是本阶段必须提交的测试代码。它们用于提示后续重构 PR：
+在改动对应边界之前，应该优先补哪些 contract test，或者先抽出哪个可测试 seam。
 
-1. CLI parser：补 `build --config --package --bin`、`run qemu --config --qemu-config --debug --dtb-dump`、
+进入 R1 前建议优先补：
+
+1. CLI parser：`build --config --package --bin`、`run qemu --config --qemu-config --debug --dtb-dump`、
    `run uboot --config --uboot-config`、全局 `--manifest`。
-2. `cargo-osrun` parser：补默认 QEMU、`uboot` 子命令、`--to-bin`、`--no-run`、`--build-dir`、`--bin-dir`。
-3. Cargo artifact 选择：补显式 `bin`、package 同名 bin、`default-run`、单一 bin、多 bin 歧义报错。
-4. Cargo profile/log：补 debug/release effective profile 与 `log` feature 组合。
-5. Custom runtime：补 `ostool build` 只执行 `build_cmd`，run/board runtime 路径执行 `build_cmd + elf/to_bin`
-   准备的差异。
-6. Board session：保留 no-available-board retry、board-type-not-found 立即失败、release 调用、heartbeat 停止。
+2. `cargo-osrun` parser：默认 QEMU、`uboot` 子命令、`--to-bin`、`--no-run`、`--build-dir`、`--bin-dir`。
+3. public API trybuild：确认 `src/lib.rs` 当前公开模块和 `Tool` 相关 re-export 没有被 R1 拆文件缩窄。
 
-QEMU command plan、U-Boot FIT 生成和 execution result 建议放到 R3/R5/R6 的第一步抽 seam 后再补，不在
-R0 用脆弱的源文本扫描代替行为测试。
+进入 R2 前建议优先补：
+
+1. Cargo artifact 选择：显式 `bin`、package 同名 bin、`default-run`、单一 bin、多 bin 歧义报错。
+2. Cargo profile/log：debug/release effective profile 与 `log` feature 组合。
+3. Custom runtime：`ostool build` 只执行 `build_cmd`，run/board runtime 路径执行 `build_cmd + elf/to_bin`
+   准备的差异。
+4. someboot 自动参数：先记录当前重复注入风险，再在 R2 收敛到唯一注入点。
+
+放到后续阶段第一步处理：
+
+- R3：抽出 U-Boot FIT 生成服务后，再补 FIT 输入、默认 Linux/raw-bin 映射和后续 ELF/FDT 扩展测试。
+- R5：抽出 QEMU command plan seam 后，再补 `-kernel`、UEFI pflash/ESP、`dtb_dump` 和 boot source 测试。
+- R6：抽出 execution result seam 后，再补 timeout、success/fail regex、日志 drain 和汇总结果测试。
+- board/server 硬件行为：真实 board server、串口和电源路径仍需要手动或集成环境验证，不能用 host-only
+  单元测试替代。

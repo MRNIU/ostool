@@ -563,9 +563,17 @@ fn select_executable_artifact(
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
+    use std::{
+        collections::HashMap,
+        fs,
+        path::{Path, PathBuf},
+    };
 
-    use super::{ResolvedCargoArtifact, select_executable_artifact};
+    use super::{CargoBuilder, ResolvedCargoArtifact, select_executable_artifact};
+    use crate::{
+        Tool, ToolConfig,
+        build::config::{Cargo, CargoBuildProfile},
+    };
 
     fn artifact(name: &str) -> ResolvedCargoArtifact {
         let cargo_artifact_dir = PathBuf::from("/tmp/ostool-target/debug");
@@ -673,5 +681,64 @@ mod tests {
         assert!(rendered.contains("multiple binary targets"));
         assert!(rendered.contains("kernel-qemu"));
         assert!(rendered.contains("kernel-uboot"));
+    }
+
+    #[tokio::test]
+    async fn handle_output_writes_cargo_artifact_state_without_runtime_conversion() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(
+            temp.path().join("Cargo.toml"),
+            "[package]\nname = \"kernel\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+        fs::create_dir_all(temp.path().join("src")).unwrap();
+        fs::write(temp.path().join("src/main.rs"), "fn main() {}\n").unwrap();
+
+        let cargo_artifact_dir = temp.path().join("target/aarch64/debug");
+        fs::create_dir_all(&cargo_artifact_dir).unwrap();
+        let elf_path = cargo_artifact_dir.join("kernel");
+        fs::copy(std::env::current_exe().unwrap(), &elf_path).unwrap();
+
+        let config = Cargo {
+            env: HashMap::new(),
+            target: "aarch64-unknown-none".into(),
+            package: "kernel".into(),
+            bin: None,
+            features: vec![],
+            log: None,
+            extra_config: None,
+            profile: Some(CargoBuildProfile::Debug),
+            args: vec![],
+            pre_build_cmds: vec![],
+            post_build_cmds: vec![],
+            to_bin: true,
+        };
+
+        let mut tool = Tool::new(ToolConfig {
+            manifest: Some(temp.path().to_path_buf()),
+            ..Default::default()
+        })
+        .unwrap();
+
+        let mut builder = CargoBuilder::build(&mut tool, &config, None).skip_objcopy(true);
+        builder.resolved_artifact = Some(ResolvedCargoArtifact {
+            elf_path: elf_path.clone(),
+            cargo_artifact_dir: cargo_artifact_dir.clone(),
+        });
+        builder.handle_output().await.unwrap();
+        drop(builder);
+
+        let expected_elf = elf_path.canonicalize().unwrap();
+        assert_eq!(tool.ctx.artifacts.elf.as_ref(), Some(&expected_elf));
+        assert!(tool.ctx.artifacts.bin.is_none());
+        assert_eq!(
+            tool.ctx.artifacts.cargo_artifact_dir.as_ref(),
+            Some(&cargo_artifact_dir)
+        );
+        assert_eq!(
+            tool.ctx.artifacts.runtime_artifact_dir.as_ref(),
+            Some(&cargo_artifact_dir)
+        );
+        assert!(tool.ctx.arch.is_some());
     }
 }

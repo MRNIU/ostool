@@ -35,6 +35,8 @@ use crate::{
 /// Cargo builder implementation for building projects.
 pub(crate) mod artifact_selector;
 mod cargo_builder;
+pub(crate) mod config_hooks;
+pub(crate) mod config_loader;
 
 /// Build configuration types and structures.
 pub mod config;

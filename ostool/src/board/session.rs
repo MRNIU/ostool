@@ -1,3 +1,5 @@
+//! Board-session acquisition, lease heartbeat, and release lifecycle handling.
+
 use std::{future::Future, sync::Arc, time::Duration};
 
 use anyhow::Context as _;
@@ -87,6 +89,7 @@ impl Drop for BoardSession {
     }
 }
 
+/// Runs the production heartbeat loop for one active board session.
 async fn run_heartbeat_loop(
     client: BoardServerClient,
     session_id: String,
@@ -106,6 +109,7 @@ async fn run_heartbeat_loop(
     .await
 }
 
+/// Drives lease heartbeats using injectable heartbeat and sleep functions.
 async fn run_heartbeat_loop_with<HeartbeatFn, HeartbeatFut, SleepFn, SleepFut>(
     session_id: String,
     lease_expires_at: Arc<RwLock<DateTime<Utc>>>,
@@ -270,6 +274,7 @@ mod tests {
         assert_eq!(result.unwrap_err().message, "boom");
     }
 
+    /// Verifies missing board types stop retrying immediately.
     #[tokio::test]
     async fn acquire_session_stops_retrying_when_board_type_is_missing() {
         let error = BoardServerClientError {
@@ -301,6 +306,7 @@ mod tests {
         assert!(sleeps.lock().unwrap().is_empty());
     }
 
+    /// Verifies heartbeat responses update lease state until a stop signal arrives.
     #[tokio::test]
     async fn heartbeat_loop_updates_lease_until_stop_signal() {
         let initial_lease = Utc::now();

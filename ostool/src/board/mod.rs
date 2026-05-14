@@ -1,3 +1,5 @@
+//! Board-server configuration, session allocation, and board run helpers.
+
 pub mod client;
 pub mod config;
 pub mod config_tui;
@@ -166,6 +168,7 @@ async fn finalize_session(
     finalize_session_with(run_result, || session.release()).await
 }
 
+/// Releases a board session while preserving any run error as the primary error.
 async fn finalize_session_with<ReleaseFn, ReleaseFut>(
     run_result: anyhow::Result<()>,
     release: ReleaseFn,
@@ -330,6 +333,7 @@ mod tests {
         assert_eq!(render_board_table(&[]), "No board types found.");
     }
 
+    /// Verifies session release still happens after the board run fails.
     #[tokio::test]
     async fn finalize_session_releases_after_run_error() {
         let released = Arc::new(AtomicBool::new(false));
@@ -346,6 +350,7 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("run failed"));
     }
 
+    /// Verifies release errors are attached when a failed run also fails release.
     #[tokio::test]
     async fn finalize_session_preserves_run_error_and_reports_release_error() {
         let result = finalize_session_with(Err(anyhow::anyhow!("run failed")), || async {

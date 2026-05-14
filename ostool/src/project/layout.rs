@@ -1,3 +1,5 @@
+//! Cargo manifest and workspace path resolution for ostool invocations.
+
 use std::{
     env::current_dir,
     path::{Path, PathBuf},
@@ -16,6 +18,7 @@ pub struct ProjectLayout {
 }
 
 impl ProjectLayout {
+    /// Creates a project layout from already-resolved manifest and workspace paths.
     pub(crate) fn from_manifest_parts(
         manifest_path: PathBuf,
         manifest_dir: PathBuf,
@@ -28,19 +31,23 @@ impl ProjectLayout {
         }
     }
 
+    /// Returns the canonical Cargo manifest path used by this invocation.
     pub fn manifest_path(&self) -> &Path {
         &self.manifest_path
     }
 
+    /// Returns the package directory containing the selected manifest.
     pub fn manifest_dir(&self) -> &Path {
         &self.manifest_dir
     }
 
+    /// Returns the Cargo workspace root from metadata.
     pub fn workspace_dir(&self) -> &Path {
         &self.workspace_dir
     }
 }
 
+/// Resolves manifest and workspace paths from an optional manifest or directory.
 pub fn resolve_project_layout(input: Option<PathBuf>) -> anyhow::Result<ProjectLayout> {
     let manifest_path = resolve_manifest_path(input)?;
     let manifest_dir = manifest_path
@@ -66,6 +73,7 @@ pub fn resolve_project_layout(input: Option<PathBuf>) -> anyhow::Result<ProjectL
     })
 }
 
+/// Resolves a manifest path from a file, directory, or current working directory.
 fn resolve_manifest_path(input: Option<PathBuf>) -> anyhow::Result<PathBuf> {
     let path = match input {
         Some(path) => path,

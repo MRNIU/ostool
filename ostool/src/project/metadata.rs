@@ -1,3 +1,5 @@
+//! Cargo metadata helpers used by invocation and package-scoped expansion.
+
 use std::path::PathBuf;
 
 use anyhow::{Context, anyhow, bail};
@@ -5,6 +7,7 @@ use cargo_metadata::Metadata;
 
 use super::ProjectLayout;
 
+/// Loads workspace metadata for the resolved project layout.
 pub fn cargo_metadata(layout: &ProjectLayout) -> anyhow::Result<Metadata> {
     cargo_metadata::MetadataCommand::new()
         .manifest_path(layout.manifest_path())
@@ -18,6 +21,7 @@ pub fn cargo_metadata(layout: &ProjectLayout) -> anyhow::Result<Metadata> {
         })
 }
 
+/// Finds the manifest directory for a named Cargo package.
 pub fn package_manifest_dir(layout: &ProjectLayout, package: &str) -> anyhow::Result<PathBuf> {
     let metadata = cargo_metadata(layout)?;
     let Some(pkg) = metadata.packages.iter().find(|pkg| pkg.name == package) else {

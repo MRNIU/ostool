@@ -541,17 +541,37 @@ R1 按 R1a-R1i 保守切片执行。切片编号是执行顺序，不改变最�
 
 步骤：
 
-- [ ] 把 manifest path resolution 移到 `project/layout.rs`。
-- [ ] 把 `ManifestContext` 语义重命名为 `ProjectLayout`。
-- [ ] 把 package metadata lookup 移到 `project/metadata.rs`。
-- [ ] 引入 `InvocationOptions`、`InvocationState` 和 `Invocation`。
-- [ ] 保持 `ProjectLayout`、`InvocationOptions`、`InvocationState`、`Invocation` 字段 private。
-- [ ] 引入 `ActiveBuildContext`、`ActiveCargoBuild`、`ActiveCustomBuild`、`VariableScope` 和 `ProcessContext`。
-- [ ] 先让现有 `Tool` 门面调用这些新 helper；本切片不要求删除 `Tool`。
-- [ ] 确认 `Tool` 没有新增业务职责，只是转发到新 helper。
-- [ ] 用 invocation constructor 替代 `init_tool()`。
-- [ ] 替换 `cargo-osrun` 里的 `resolve_manifest_context()` 用法。
-- [ ] Run `cargo check -p ostool`。
+- [x] 把 manifest path resolution 移到 `project/layout.rs`。
+- [x] 把 `ManifestContext` 语义重命名为 `ProjectLayout`。
+- [x] 把 package metadata lookup 移到 `project/metadata.rs`。
+- [x] 引入 `InvocationOptions`、`InvocationState` 和 `Invocation`。
+- [x] 保持 `ProjectLayout`、`InvocationOptions`、`InvocationState`、`Invocation` 字段 private。
+- [x] 引入 `ActiveBuildContext`、`ActiveCargoBuild`、`ActiveCustomBuild`、`VariableScope` 和 `ProcessContext`。
+- [x] 先让现有 `Tool` 门面调用这些新 helper；本切片不要求删除 `Tool`。
+- [x] 确认 `Tool` 没有新增业务职责，只是转发到新 helper。
+- [x] 用 invocation constructor 替代 `init_tool()`。
+- [x] 替换 `cargo-osrun` 里的 `resolve_manifest_context()` 用法。
+- [x] Run `cargo check -p ostool`。
+
+2026-05-21 当前状态：
+
+- R1b 已在 `feature/invocation-context` 上完成，主要落在 `ostool/src/invocation.rs`、
+  `ostool/src/project/layout.rs`、`ostool/src/project/metadata.rs`、
+  `ostool/src/project/variables.rs`、`ostool/src/process/mod.rs`、`ostool/src/tool.rs`、
+  `ostool/src/main.rs` 和 `ostool/src/bin/cargo-osrun.rs`。
+- `ProjectLayout` 承接 manifest/workspace path resolution；旧 `ManifestContext` 只保留为
+  兼容转换层。
+- `metadata::cargo_metadata()` 和 `metadata::package_manifest_dir()` 承接 package metadata
+  lookup，`Tool` 不再直接持有这部分实现。
+- `InvocationOptions`、`InvocationState`、`Invocation`、`ActiveBuildContext`、
+  `ActiveCargoBuild`、`ActiveCustomBuild`、`VariableScope` 和 `ProcessContext` 已引入，
+  核心字段保持 private。
+- `Tool` 中的 command、shell hook、variable replacement 和 metadata lookup 已改为调用
+  project/process helper；R1b 不删除 `Tool`，只让它成为更薄的兼容门面。
+- `main.rs` 和 `cargo-osrun` 先构造 `Invocation`，再通过 `Tool::from_invocation()` 进入旧
+  运行路径；`cargo-osrun` 不再直接调用 `resolve_manifest_context()`。
+- 已验证：
+  - `docker run --rm --platform linux/amd64 -v "$PWD":/workspace -w /workspace -e CARGO_TARGET_DIR=/tmp/ostool-target rust:1.90-bookworm bash -lc 'apt-get update >/dev/null && apt-get install -y --no-install-recommends pkg-config libudev-dev >/dev/null && /usr/local/cargo/bin/cargo check -p ostool --target x86_64-unknown-linux-gnu'`
 
 审查重点：
 

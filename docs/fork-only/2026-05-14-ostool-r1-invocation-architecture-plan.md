@@ -481,19 +481,43 @@ R1 按 R1a-R1i 保守切片执行。切片编号是执行顺序，不改变最�
 
 步骤：
 
-- [ ] 补 `ostool build --config --package --bin` parser tests。
-- [ ] 补 `ostool run qemu --config --qemu-config --debug --dtb-dump --package --bin` parser tests。
-- [ ] 补 `ostool run uboot --config --uboot-config --package --bin` parser tests。
-- [ ] 补 global `--manifest` parser tests。
-- [ ] 补 `cargo-osrun` parser tests：default QEMU、`uboot`、`--to-bin`、`--no-run`、`--build-dir`、`--bin-dir`。
-- [ ] 补 Cargo artifact selector tests：显式 `bin`、package 同名 bin、`default-run`、single bin、多 bin ambiguity。
-- [ ] 补 variable replacement tests：`${workspace}`、`${workspaceFolder}`、`${package}`、`${tmpDir}`、`${env:VAR}`、missing env -> empty string。
-- [ ] 补 process context tests：workdir、`WORKSPACE_FOLDER`、arg/env replacement。
-- [ ] 补 shell context tests：runtime ELF 存在时 shell hook 注入 `KERNEL_ELF`。
-- [ ] 补 runtime artifact state tests：Cargo artifact path 和 custom ELF path 的旧行为等价。
-- [ ] 更新 public API trybuild expectations，明确 `Tool` 相关 API reset 是有意变更。
-- [ ] Run `cargo test -p ostool public_api`。
-- [ ] Run parser/selector/variable/process/artifact 相关最小测试。
+- [x] 补 `ostool build --config --package --bin` parser tests。
+- [x] 补 `ostool run qemu --config --qemu-config --debug --dtb-dump --package --bin` parser tests。
+- [x] 补 `ostool run uboot --config --uboot-config --package --bin` parser tests。
+- [x] 补 global `--manifest` parser tests。
+- [x] 补 `cargo-osrun` parser tests：default QEMU、`uboot`、`--to-bin`、`--no-run`、`--build-dir`、`--bin-dir`。
+- [x] 补 Cargo artifact selector tests：显式 `bin`、package 同名 bin、`default-run`、single bin、多 bin ambiguity。
+- [x] 补 variable replacement tests：`${workspace}`、`${workspaceFolder}`、`${package}`、`${tmpDir}`、`${env:VAR}`、missing env -> empty string。
+- [x] 补 process context tests：workdir、`WORKSPACE_FOLDER`、arg/env replacement。
+- [x] 补 shell context tests：runtime ELF 存在时 shell hook 注入 `KERNEL_ELF`。
+- [x] 补 runtime artifact state tests：Cargo artifact path 和 custom ELF path 的旧行为等价。
+- [x] 更新 public API trybuild expectations，明确 R1a 兼容期 public API 边界。
+- [x] Run `cargo test -p ostool public_api`。
+- [x] Run parser/selector/variable/process/artifact 相关最小测试。
+
+2026-05-21 当前状态：
+
+- R1a 已作为重构前行为护栏完成，主要落在 `ostool/src/main.rs`、
+  `ostool/src/bin/cargo-osrun.rs`、`ostool/src/build/cargo_builder.rs`、
+  `ostool/src/tool.rs` 和 `ostool/tests/public_api.rs`。
+- parser 覆盖：
+  - `parse_build_with_manifest_config_package_and_bin`
+  - `parse_run_qemu_with_build_qemu_and_cargo_selector_args`
+  - `parse_run_uboot_with_build_uboot_and_cargo_selector_args`
+  - `parse_default_qemu_runner_args`
+  - `parse_no_run_without_runner_command`
+  - `parse_uboot_runner_subcommand`
+- selector 覆盖 explicit `bin`、package-name binary、`default-run`、single binary、
+  empty output 和 multiple binaries ambiguity。
+- variable/process/shell 覆盖 `${workspace}`、`${workspaceFolder}`、`${package}`、
+  `${tmpDir}`、missing env、command arg/env replacement、`WORKSPACE_FOLDER` 和
+  shell hook `KERNEL_ELF` 注入。
+- runtime artifact state 覆盖 custom ELF path 和 Cargo resolved artifact path 的 legacy state。
+- public API trybuild 当前记录的是 R1a 兼容期边界：`Tool` / `ToolConfig` 仍可用，
+  内部 implementation module 仍保持 private；最终删除或重置 `Tool` API 仍属于 R1h。
+- 已验证 `cargo test -p ostool --target x86_64-unknown-linux-gnu`，其中包含
+  `public_api` trybuild、parser tests、selector tests、variable/process/shell tests、
+  runtime artifact state tests 和 `qemu_byte_stream` tests。
 
 审查重点：
 
@@ -585,7 +609,7 @@ R1 按 R1a-R1i 保守切片执行。切片编号是执行顺序，不改变最�
 步骤：
 
 - [ ] 把 Cargo JSON executable selection 移到 `artifact_selector.rs`。
-- [ ] 定义 `ResolvedCargoArtifact` 和 `CargoBuildOutcome`。
+- [x] 定义 `ResolvedCargoArtifact` 和 `CargoBuildOutcome`。
 - [ ] 把 `CargoBuilder` lifecycle 改造成 `CargoBuildPipeline` 或 `run_cargo_build()`。
 - [ ] 如果 pipeline 不需要持有状态，优先使用 `run_cargo_build()` module function。
 - [ ] `CargoBuildPipeline` 或 `run_cargo_build()` 接收 `&ProjectLayout`、`&InvocationOptions`、`&ActiveCargoBuild` 和 `ProcessContext` 所需窄输入。
@@ -597,6 +621,27 @@ R1 按 R1a-R1i 保守切片执行。切片编号是执行顺序，不改变最�
 - [ ] Run artifact selector tests。
 - [ ] Run `cargo test -p ostool public_api`。
 - [ ] Run `cargo check -p ostool`。
+
+2026-05-21 当前进展：
+
+- 已在 `ostool/src/build/cargo_builder.rs` 中引入 `CargoBuildOutcome` 和
+  `ResolvedCargoArtifact` 只读访问器。
+- `CargoBuilder::execute()` 当前返回 `CargoBuildOutcome`；旧 `Tool` 兼容层仍立即把 outcome
+  应用到 runtime artifact state，以保持现有 CLI/config/runtime 行为。
+- 已移除 `CargoBuilder` 内部的 `resolved_artifact` 临时状态；artifact resolution 的事实结果通过
+  `CargoBuildOutcome` 传递。
+- 已补 `cargo_build_outcome_exposes_resolved_executable_paths` 和
+  `handle_output_records_runtime_artifact_state_from_cargo_build_outcome` 测试。
+- 已验证：
+  - `cargo fmt --all -- --check`
+  - `cargo check -p ostool --target x86_64-unknown-linux-gnu`
+  - `cargo test -p ostool build::cargo_builder --target x86_64-unknown-linux-gnu`
+  - `cargo test -p ostool public_api --target x86_64-unknown-linux-gnu`
+  - `cargo clippy -p ostool --target x86_64-unknown-linux-gnu --all-features`
+  - `cargo test -p ostool --target x86_64-unknown-linux-gnu`
+- 本切片尚未完成整个 R1d：Cargo JSON selection 还没有移到 `artifact_selector.rs`，
+  build lifecycle 也还没有改成接收 `ProjectLayout` / `InvocationOptions` / `ActiveCargoBuild`
+  / `ProcessContext` 窄输入的 `run_cargo_build()`。
 
 审查重点：
 

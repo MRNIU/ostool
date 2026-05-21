@@ -161,6 +161,7 @@ impl Tool {
         cargo_builder::CargoBuilder::build_auto(self, config)
             .execute()
             .await
+            .map(|_| ())
     }
 
     pub(crate) async fn prepare_runtime_artifacts(
@@ -196,6 +197,7 @@ impl Tool {
             .resolve_artifact_from_json(true)
             .execute()
             .await
+            .map(|_| ())
     }
 
     /// Builds and runs the project using Cargo with the specified runner.

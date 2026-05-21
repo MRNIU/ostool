@@ -146,7 +146,7 @@ impl<'a> CargoBuilder<'a> {
 
     fn run_pre_build_cmds(&mut self) -> anyhow::Result<()> {
         for cmd in &self.config.pre_build_cmds {
-            self.tool.shell_run_cmd(cmd)?;
+            crate::process::shell_run_cmd(&self.tool.process_context(), cmd)?;
         }
         Ok(())
     }
@@ -231,7 +231,8 @@ impl<'a> CargoBuilder<'a> {
     }
 
     async fn build_cargo_command(&mut self) -> anyhow::Result<Command> {
-        let mut cmd = self.tool.command("cargo");
+        let process_context = self.tool.process_context();
+        let mut cmd = crate::process::command("cargo", &process_context);
 
         cmd.arg(&self.command);
 
@@ -334,7 +335,7 @@ impl<'a> CargoBuilder<'a> {
 
     fn run_post_build_cmds(&mut self) -> anyhow::Result<()> {
         for cmd in &self.config.post_build_cmds {
-            self.tool.shell_run_cmd(cmd)?;
+            crate::process::shell_run_cmd(&self.tool.process_context(), cmd)?;
         }
         Ok(())
     }

@@ -161,6 +161,7 @@ impl Tool {
     }
 
     /// Executes a shell command in the current context.
+    #[allow(dead_code)]
     pub(crate) fn shell_run_cmd(&self, cmd: &str) -> anyhow::Result<()> {
         crate::process::shell_run_cmd(&self.process_context(), cmd)
     }
@@ -377,10 +378,12 @@ impl Tool {
         )
     }
 
+    #[allow(dead_code)]
     pub(crate) fn replace_string(&self, input: &str) -> anyhow::Result<String> {
         crate::project::variables::expand_variables(input, &self.variable_scope())
     }
 
+    #[allow(dead_code)]
     pub(crate) fn replace_path_variables(&self, path: PathBuf) -> anyhow::Result<PathBuf> {
         crate::project::variables::expand_path_variables(path, &self.variable_scope())
     }
@@ -404,14 +407,14 @@ impl Tool {
         )
     }
 
-    fn variable_scope(&self) -> VariableScope {
+    pub(crate) fn variable_scope(&self) -> VariableScope {
         let package_dir = self
             .package_root_for_variables()
             .unwrap_or_else(|_| self.manifest_dir.clone());
         VariableScope::for_package(&self.project_layout(), package_dir)
     }
 
-    fn process_context(&self) -> ProcessContext {
+    pub(crate) fn process_context(&self) -> ProcessContext {
         ProcessContext::new(
             self.manifest_dir.clone(),
             self.workspace_dir.clone(),

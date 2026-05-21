@@ -596,15 +596,38 @@ R1 按 R1a-R1i 保守切片执行。切片编号是执行顺序，不改变最�
 
 步骤：
 
-- [ ] 把 `${workspace}`、`${workspaceFolder}`、`${package}`、`${tmpDir}`、`${env:VAR}` 替换移到 `project::variables`。
-- [ ] variable expansion 接收 `&VariableScope`；无 active build 时从 `ProjectLayout` 派生 default scope。
-- [ ] 引入 `ProcessContext`，显式保存 workdir、workspace_dir、VariableScope、kernel_elf。
-- [ ] 把 command construction 移到 `process` 模块；只有函数数量和职责膨胀时才拆 `process::command`。
-- [ ] 把 shell command execution 移到 `process` 模块；只有函数数量和职责膨胀时才拆 `process::shell`。
-- [ ] 替换 `Tool::replace_string`、`Tool::replace_path_variables`、`Tool::command`、`Tool::shell_run_cmd` call sites。
-- [ ] 保持 shell hook 的 `KERNEL_ELF` 注入语义。
-- [ ] Run variable/process tests。
-- [ ] Run `cargo check -p ostool`。
+- [x] 把 `${workspace}`、`${workspaceFolder}`、`${package}`、`${tmpDir}`、`${env:VAR}` 替换移到 `project::variables`。
+- [x] variable expansion 接收 `&VariableScope`；无 active build 时从 `ProjectLayout` 派生 default scope。
+- [x] 引入 `ProcessContext`，显式保存 workdir、workspace_dir、VariableScope、kernel_elf。
+- [x] 把 command construction 移到 `process` 模块；只有函数数量和职责膨胀时才拆 `process::command`。
+- [x] 把 shell command execution 移到 `process` 模块；只有函数数量和职责膨胀时才拆 `process::shell`。
+- [x] 替换 `Tool::replace_string`、`Tool::replace_path_variables`、`Tool::command`、`Tool::shell_run_cmd` call sites。
+- [x] 保持 shell hook 的 `KERNEL_ELF` 注入语义。
+- [x] Run variable/process tests。
+- [x] Run `cargo check -p ostool`。
+
+2026-05-21 当前状态：
+
+- `QemuConfig`、`UbootConfig`、`LocalUbootConfig`、`Net` 和 `BoardRunConfig`
+  的变量替换入口已改为接收 `&VariableScope`，不再接收 `&Tool`。
+- QEMU、U-Boot 和 board config path resolution 改为直接调用
+  `project::variables::expand_path_variables()`。
+- Cargo pre/post build hooks、custom build hooks、QEMU command construction、U-Boot
+  local reset/power-off hooks 改为直接调用 `process::command()` /
+  `process::shell_run_cmd()`。
+- `Tool::replace_string`、`Tool::replace_path_variables`、`Tool::command` 和
+  `Tool::shell_run_cmd` 只作为兼容门面保留；生产调用点不再依赖这些 wrapper。
+- 本切片没有拆出 `process::command` 或 `process::shell` 子模块，因为当前函数数量和职责
+  仍适合留在 `process/mod.rs`。
+- 已验证：
+  - `cargo fmt --all -- --check`
+  - `cargo check -p ostool --target x86_64-unknown-linux-gnu`
+  - `cargo test -p ostool replace_string --target x86_64-unknown-linux-gnu`
+  - `cargo test -p ostool command_replaces --target x86_64-unknown-linux-gnu`
+  - `cargo test -p ostool shell_run_cmd --target x86_64-unknown-linux-gnu`
+  - `cargo test -p ostool qemu_config --target x86_64-unknown-linux-gnu`
+  - `cargo test -p ostool uboot_config --target x86_64-unknown-linux-gnu`
+  - `cargo test -p ostool board_run_config --target x86_64-unknown-linux-gnu`
 
 审查重点：
 

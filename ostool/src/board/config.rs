@@ -296,7 +296,7 @@ port = 9000
 
         config
             .apply_overrides(
-                &tool.variable_scope(),
+                &tool.variable_scope().unwrap(),
                 Some(" rk3568 "),
                 Some(" 127.0.0.1 "),
                 Some(7000),

@@ -186,8 +186,8 @@ impl Tool {
         path: &Path,
     ) -> anyhow::Result<BoardRunConfig> {
         self.sync_cargo_context(cargo);
-        let scope = self.variable_scope();
-        let path = variables::expand_path_variables(path.to_path_buf(), &scope)?;
+        let scope = self.variable_scope()?;
+        let path = variables::expand_path_variables(path, &scope)?;
         BoardRunConfig::read_from_path(&scope, path)
     }
 
@@ -197,8 +197,8 @@ impl Tool {
         dir: &Path,
     ) -> anyhow::Result<BoardRunConfig> {
         self.sync_cargo_context(cargo);
-        let scope = self.variable_scope();
-        let dir = variables::expand_path_variables(dir.to_path_buf(), &scope)?;
+        let scope = self.variable_scope()?;
+        let dir = variables::expand_path_variables(dir, &scope)?;
         BoardRunConfig::load_or_create(&scope, Some(dir.join(".board.toml"))).await
     }
 
@@ -206,8 +206,8 @@ impl Tool {
         &mut self,
         dir: &Path,
     ) -> anyhow::Result<BoardRunConfig> {
-        let scope = self.variable_scope();
-        let dir = variables::expand_path_variables(dir.to_path_buf(), &scope)?;
+        let scope = self.variable_scope()?;
+        let dir = variables::expand_path_variables(dir, &scope)?;
         BoardRunConfig::load_or_create(&scope, Some(dir.join(".board.toml"))).await
     }
 
@@ -215,8 +215,8 @@ impl Tool {
         &mut self,
         path: &Path,
     ) -> anyhow::Result<BoardRunConfig> {
-        let scope = self.variable_scope();
-        let path = variables::expand_path_variables(path.to_path_buf(), &scope)?;
+        let scope = self.variable_scope()?;
+        let path = variables::expand_path_variables(path, &scope)?;
         BoardRunConfig::read_from_path(&scope, path)
     }
 
@@ -264,7 +264,7 @@ impl Tool {
     ) -> anyhow::Result<()> {
         let global_config = load_board_global_config_with_notice()?;
         let mut board_config = board_config.clone();
-        let scope = self.variable_scope();
+        let scope = self.variable_scope()?;
         board_config.apply_overrides(
             &scope,
             options.board_type.as_deref(),

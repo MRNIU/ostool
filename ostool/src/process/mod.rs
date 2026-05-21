@@ -5,6 +5,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use anyhow::Context as _;
+
 use crate::{project::variables::VariableScope, utils::Command};
 
 /// Concrete process inputs for command construction and shell hooks.
@@ -90,6 +92,8 @@ pub fn shell_run_cmd(context: &ProcessContext, cmd: &str) -> anyhow::Result<()> 
         command.env("KERNEL_ELF", elf.display().to_string());
     }
 
-    command.run()?;
+    command
+        .run()
+        .with_context(|| format!("failed to run shell command: {cmd}"))?;
     Ok(())
 }

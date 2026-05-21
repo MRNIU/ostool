@@ -169,8 +169,8 @@ impl Tool {
         path: &Path,
     ) -> anyhow::Result<QemuConfig> {
         self.sync_cargo_context(cargo);
-        let scope = self.variable_scope();
-        let config_path = variables::expand_path_variables(path.to_path_buf(), &scope)?;
+        let scope = self.variable_scope()?;
+        let config_path = variables::expand_path_variables(path, &scope)?;
         read_qemu_config_at_path(&scope, config_path).await
     }
 
@@ -183,7 +183,7 @@ impl Tool {
         let arch = infer_target_arch(&cargo.target).or(self.ctx.arch);
         let config_path = resolve_qemu_config_path_in_dir(&package_dir, arch, None)?;
         let default_config = self.default_qemu_config_for_cargo(cargo);
-        let scope = self.variable_scope();
+        let scope = self.variable_scope()?;
         ensure_qemu_config_at_path(&scope, config_path, default_config).await
     }
 
@@ -193,8 +193,8 @@ impl Tool {
         dir: &Path,
     ) -> anyhow::Result<QemuConfig> {
         self.sync_cargo_context(cargo);
-        let scope = self.variable_scope();
-        let dir = variables::expand_path_variables(dir.to_path_buf(), &scope)?;
+        let scope = self.variable_scope()?;
+        let dir = variables::expand_path_variables(dir, &scope)?;
         let arch = infer_target_arch(&cargo.target).or(self.ctx.arch);
         let config_path = resolve_qemu_config_path_in_dir(&dir, arch, None)?;
         let default_config = self.default_qemu_config_for_cargo(cargo);
@@ -203,8 +203,8 @@ impl Tool {
 
     /// Loads a QEMU configuration from a directory using the default filename search.
     pub async fn ensure_qemu_config_in_dir(&mut self, dir: &Path) -> anyhow::Result<QemuConfig> {
-        let scope = self.variable_scope();
-        let dir = variables::expand_path_variables(dir.to_path_buf(), &scope)?;
+        let scope = self.variable_scope()?;
+        let dir = variables::expand_path_variables(dir, &scope)?;
         let config_path = resolve_qemu_config_path_in_dir(&dir, self.ctx.arch, None)?;
         let default_config = self.default_qemu_config();
         ensure_qemu_config_at_path(&scope, config_path, default_config).await
@@ -212,8 +212,8 @@ impl Tool {
 
     /// Reads a QEMU configuration from an explicit path without creating defaults.
     pub async fn read_qemu_config_from_path(&mut self, path: &Path) -> anyhow::Result<QemuConfig> {
-        let scope = self.variable_scope();
-        let config_path = variables::expand_path_variables(path.to_path_buf(), &scope)?;
+        let scope = self.variable_scope()?;
+        let config_path = variables::expand_path_variables(path, &scope)?;
         read_qemu_config_at_path(&scope, config_path).await
     }
 
@@ -224,7 +224,8 @@ impl Tool {
         options: RunQemuOptions,
     ) -> anyhow::Result<()> {
         let mut config = config.clone();
-        config.replace_strings(&self.variable_scope())?;
+        let scope = self.variable_scope()?;
+        config.replace_strings(&scope)?;
         config.normalize("QEMU runtime config")?;
         run_qemu_with_config(self, options, config).await
     }
@@ -368,7 +369,7 @@ impl QemuRunner<'_> {
             }
         }
 
-        let process_context = self.tool.process_context();
+        let process_context = self.tool.process_context()?;
         let mut cmd = crate::process::command(&qemu_executable, &process_context);
 
         for arg in &self.config.args {
@@ -761,13 +762,15 @@ mod tests {
         resolve_qemu_config_path_in_dir, timeout_duration,
     };
     use object::Architecture;
-    use std::{path::PathBuf, time::Duration};
+    use std::{
+        path::{Path, PathBuf},
+        time::Duration,
+    };
     use tempfile::TempDir;
 
     use crate::{
         Tool, ToolConfig,
         build::config::{BuildConfig, BuildSystem, Cargo},
-        project::variables,
         run::{
             output_matcher::{ByteStreamMatcher, StreamMatchKind},
             shell_init::ShellAutoInitMatcher,
@@ -852,9 +855,8 @@ shell_init_cmd = "root"
         let mut tool = make_tool(tmp.path());
         tool.ctx.arch = Some(Architecture::Aarch64);
 
-        let config = read_qemu_config_at_path(&tool.variable_scope(), config_path)
-            .await
-            .unwrap();
+        let scope = tool.variable_scope().unwrap();
+        let config = read_qemu_config_at_path(&scope, config_path).await.unwrap();
 
         assert!(!config.to_bin);
         assert_eq!(config.success_regex, vec!["PASS"]);
@@ -874,7 +876,7 @@ shell_init_cmd = "root"
         tool.ctx.arch = Some(Architecture::Aarch64);
 
         let config = ensure_qemu_config_at_path(
-            &tool.variable_scope(),
+            &tool.variable_scope().unwrap(),
             config_path.clone(),
             build_default_qemu_config(Some(Architecture::Aarch64)),
         )
@@ -1148,7 +1150,9 @@ timeout = 0
             ..Default::default()
         };
 
-        config.replace_strings(&tool.variable_scope()).unwrap();
+        config
+            .replace_strings(&tool.variable_scope().unwrap())
+            .unwrap();
 
         let expected = tmp.path().display().to_string();
         assert_eq!(config.args, vec![expected.clone(), expected.clone()]);
@@ -1158,24 +1162,29 @@ timeout = 0
         assert_eq!(config.shell_init_cmd.as_deref(), Some(expected.as_str()));
     }
 
-    #[test]
-    fn qemu_config_explicit_path_supports_variables() {
+    #[tokio::test]
+    async fn read_qemu_config_from_variable_path_expands_workspace() {
         let tmp = TempDir::new().unwrap();
         write_single_crate_manifest(tmp.path());
-        let tool = make_tool(tmp.path());
-
-        let result = resolve_qemu_config_path(
-            &tool,
-            Some(
-                variables::expand_path_variables(
-                    "${workspace}/qemu.toml".into(),
-                    &tool.variable_scope(),
-                )
-                .unwrap(),
-            ),
+        std::fs::write(
+            tmp.path().join("qemu.toml"),
+            r#"
+args = ["-nographic"]
+uefi = false
+to_bin = false
+success_regex = []
+fail_regex = []
+"#,
         )
         .unwrap();
-        assert_eq!(result, tmp.path().join("qemu.toml"));
+        let mut tool = make_tool(tmp.path());
+
+        let config = tool
+            .read_qemu_config_from_path(Path::new("${workspace}/qemu.toml"))
+            .await
+            .unwrap();
+
+        assert_eq!(config.args, vec!["-nographic"]);
     }
 
     #[test]

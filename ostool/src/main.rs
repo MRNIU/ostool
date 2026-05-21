@@ -9,7 +9,7 @@ use env_logger::Env;
 
 use log::info;
 use ostool::{
-    ManifestContext, Tool, ToolConfig, board,
+    ManifestContext, Tool, board,
     build::{self, CargoQemuRunnerArgs, CargoRunnerKind, CargoUbootRunnerArgs},
     invocation::{Invocation, InvocationOptions},
     menuconfig::{MenuConfigHandler, MenuConfigMode},
@@ -346,16 +346,10 @@ fn init_tool(manifest_arg: Option<PathBuf>) -> Result<(Tool, ManifestContext)> {
         None,
         false,
     ))?;
-    let manifest = ManifestContext::from(invocation.project_layout().clone());
+    let manifest = ManifestContext::from_invocation(&invocation);
     info!("Using manifest {}", manifest.manifest_path.display());
 
-    let tool = Tool::from_invocation(
-        ToolConfig {
-            manifest: Some(manifest.manifest_path.clone()),
-            ..Default::default()
-        },
-        invocation,
-    );
+    let tool = Tool::from_invocation(invocation);
     Ok((tool, manifest))
 }
 

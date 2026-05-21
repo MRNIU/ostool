@@ -318,8 +318,8 @@ impl Tool {
         path: &Path,
     ) -> anyhow::Result<UbootConfig> {
         self.sync_cargo_context(cargo);
-        let scope = self.variable_scope();
-        let config_path = variables::expand_path_variables(path.to_path_buf(), &scope)?;
+        let scope = self.variable_scope()?;
+        let config_path = variables::expand_path_variables(path, &scope)?;
         read_uboot_config_at_path(&scope, config_path).await
     }
 
@@ -339,15 +339,15 @@ impl Tool {
         dir: &Path,
     ) -> anyhow::Result<UbootConfig> {
         self.sync_cargo_context(cargo);
-        let scope = self.variable_scope();
-        let dir = variables::expand_path_variables(dir.to_path_buf(), &scope)?;
+        let scope = self.variable_scope()?;
+        let dir = variables::expand_path_variables(dir, &scope)?;
         ensure_uboot_config_at_path(&scope, dir.join(".uboot.toml"), self.default_uboot_config())
             .await
     }
 
     pub async fn ensure_uboot_config_in_dir(&mut self, dir: &Path) -> anyhow::Result<UbootConfig> {
-        let scope = self.variable_scope();
-        let dir = variables::expand_path_variables(dir.to_path_buf(), &scope)?;
+        let scope = self.variable_scope()?;
+        let dir = variables::expand_path_variables(dir, &scope)?;
         ensure_uboot_config_at_path(&scope, dir.join(".uboot.toml"), self.default_uboot_config())
             .await
     }
@@ -356,8 +356,8 @@ impl Tool {
         &mut self,
         path: &Path,
     ) -> anyhow::Result<UbootConfig> {
-        let scope = self.variable_scope();
-        let config_path = variables::expand_path_variables(path.to_path_buf(), &scope)?;
+        let scope = self.variable_scope()?;
+        let config_path = variables::expand_path_variables(path, &scope)?;
         read_uboot_config_at_path(&scope, config_path).await
     }
 
@@ -368,7 +368,8 @@ impl Tool {
     ) -> anyhow::Result<()> {
         let _ = options.show_output;
         let mut config = config.clone();
-        config.replace_strings(&self.variable_scope())?;
+        let scope = self.variable_scope()?;
+        config.replace_strings(&scope)?;
         config.normalize("U-Boot runtime config")?;
         let backend = LocalBackend::new(config.local.clone());
         let mut runner = Runner::new(self, config, backend);
@@ -650,7 +651,8 @@ impl RunnerBackend for LocalBackend {
         if let Some(cmd) = self.config.board_reset_cmd.as_deref()
             && !cmd.trim().is_empty()
         {
-            crate::process::shell_run_cmd(&tool.process_context(), cmd)?;
+            let process_context = tool.process_context()?;
+            crate::process::shell_run_cmd(&process_context, cmd)?;
         }
         Ok(())
     }
@@ -709,7 +711,9 @@ impl RunnerBackend for LocalBackend {
     async fn after_run(&mut self, tool: &Tool) -> anyhow::Result<()> {
         if let Some(cmd) = self.config.board_power_off_cmd.as_deref()
             && !cmd.trim().is_empty()
-            && let Err(err) = crate::process::shell_run_cmd(&tool.process_context(), cmd)
+            && let Err(err) = tool
+                .process_context()
+                .and_then(|context| crate::process::shell_run_cmd(&context, cmd))
         {
             log::warn!("board power-off command failed: {err:#}");
         }
@@ -1675,7 +1679,9 @@ timeout = 0
             ..Default::default()
         };
 
-        config.replace_strings(&tool.variable_scope()).unwrap();
+        config
+            .replace_strings(&tool.variable_scope().unwrap())
+            .unwrap();
 
         let expected = tmp.path().display().to_string();
         assert_eq!(

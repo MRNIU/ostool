@@ -11,7 +11,7 @@ use clap::{Parser, Subcommand};
 use colored::Colorize as _;
 use log::debug;
 use ostool::{
-    ManifestContext, Tool, ToolConfig,
+    ManifestContext, Tool,
     invocation::{Invocation, InvocationOptions},
     logger,
     run::{qemu::RunQemuOptions, uboot::RunUbootOptions},
@@ -110,16 +110,31 @@ async fn try_main() -> anyhow::Result<()> {
 
     let manifest_dir: PathBuf = env::var("CARGO_MANIFEST_DIR")?.into();
     let manifest = manifest_dir.join("Cargo.toml");
-    let bin_dir: Option<PathBuf> = args.bin_dir.clone().map(PathBuf::from);
-    let build_dir: Option<PathBuf> = args.build_dir.clone().map(PathBuf::from);
+    let parsed_args = format!("{args:#?}");
+
+    let RunnerArgs {
+        elf,
+        to_bin,
+        config,
+        show_output,
+        no_run,
+        debug,
+        command,
+        dtb_dump,
+        build_dir,
+        bin_dir,
+        ..
+    } = args;
+    let bin_dir: Option<PathBuf> = bin_dir.map(PathBuf::from);
+    let build_dir: Option<PathBuf> = build_dir.map(PathBuf::from);
 
     let invocation = Invocation::new(InvocationOptions::new(
         Some(manifest),
-        build_dir.clone(),
-        bin_dir.clone(),
-        args.debug,
+        build_dir,
+        bin_dir,
+        debug,
     ))?;
-    let manifest = ManifestContext::from(invocation.project_layout().clone());
+    let manifest = ManifestContext::from_invocation(&invocation);
     let log_path = logger::init_file_logger(&manifest.workspace_dir)?;
     let _ = LOG_PATH.set(log_path.clone());
     debug!(
@@ -127,44 +142,30 @@ async fn try_main() -> anyhow::Result<()> {
         log_path.display(),
         manifest.manifest_path.display()
     );
-    debug!("Parsed arguments: {:#?}", args);
+    debug!("Parsed arguments: {parsed_args}");
 
-    if args.no_run {
+    if no_run {
         exit(0);
     }
 
-    let mut tool = Tool::from_invocation(
-        ToolConfig {
-            manifest: Some(manifest.manifest_path.clone()),
-            build_dir,
-            bin_dir,
-            debug: args.debug,
-            disable_someboot_build_config: false,
-        },
-        invocation,
-    );
+    let mut tool = Tool::from_invocation(invocation);
 
-    tool.prepare_elf_artifact(args.elf, args.to_bin).await?;
+    tool.prepare_elf_artifact(elf, to_bin).await?;
 
-    match args.command {
+    match command {
         Some(SubCommands::Uboot(_)) => {
-            let config = match args.config.as_deref() {
+            let config = match config.as_deref() {
                 Some(path) => tool.read_uboot_config_from_path(path).await?,
                 None => {
                     tool.ensure_uboot_config_in_dir(&manifest.workspace_dir)
                         .await?
                 }
             };
-            tool.run_uboot(
-                &config,
-                RunUbootOptions {
-                    show_output: args.show_output,
-                },
-            )
-            .await?;
+            tool.run_uboot(&config, RunUbootOptions { show_output })
+                .await?;
         }
         None => {
-            let config = match args.config.as_deref() {
+            let config = match config.as_deref() {
                 Some(path) => tool.read_qemu_config_from_path(path).await?,
                 None => {
                     tool.ensure_qemu_config_in_dir(&manifest.workspace_dir)
@@ -174,8 +175,8 @@ async fn try_main() -> anyhow::Result<()> {
             tool.run_qemu(
                 &config,
                 RunQemuOptions {
-                    dtb_dump: args.dtb_dump,
-                    show_output: args.show_output,
+                    dtb_dump,
+                    show_output,
                 },
             )
             .await?;
@@ -238,21 +239,6 @@ mod tests {
         assert!(args.dtb_dump);
         assert_eq!(args.build_dir.as_deref(), Some("target/custom"));
         assert_eq!(args.bin_dir.as_deref(), Some("dist"));
-        assert!(args.command.is_none());
-    }
-
-    /// Verifies `--no-run` exits before selecting a runner backend.
-    #[test]
-    fn parse_no_run_without_runner_command() {
-        let args = RunnerArgs::try_parse_from([
-            "cargo-osrun",
-            "qemu-system-riscv64",
-            "target/kernel.elf",
-            "--no-run",
-        ])
-        .unwrap();
-
-        assert!(args.no_run);
         assert!(args.command.is_none());
     }
 

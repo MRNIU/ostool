@@ -27,15 +27,6 @@ impl VariableScope {
         }
     }
 
-    /// Builds a variable scope using the selected package manifest directory.
-    pub fn from_layout(layout: &ProjectLayout) -> Self {
-        Self::new(
-            layout.workspace_dir().to_path_buf(),
-            layout.manifest_dir().to_path_buf(),
-            std::env::temp_dir(),
-        )
-    }
-
     /// Builds a variable scope for a specific Cargo package directory.
     pub fn for_package(layout: &ProjectLayout, package_dir: PathBuf) -> Self {
         Self::new(
@@ -86,7 +77,7 @@ pub fn expand_os_value(value: &OsStr, scope: &VariableScope) -> String {
 }
 
 /// Expands placeholders in a filesystem path.
-pub fn expand_path_variables(path: PathBuf, scope: &VariableScope) -> anyhow::Result<PathBuf> {
+pub fn expand_path_variables(path: &Path, scope: &VariableScope) -> anyhow::Result<PathBuf> {
     Ok(PathBuf::from(expand_variables(
         &path.to_string_lossy(),
         scope,

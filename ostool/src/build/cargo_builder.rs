@@ -40,22 +40,6 @@ impl ResolvedCargoArtifact {
     }
 }
 
-/// Resolved Cargo build output needed by downstream runtime-artifact handling.
-#[derive(Debug, Clone)]
-pub(crate) struct CargoBuildOutcome {
-    executable: ResolvedCargoArtifact,
-}
-
-impl CargoBuildOutcome {
-    pub(crate) fn new(executable: ResolvedCargoArtifact) -> Self {
-        Self { executable }
-    }
-
-    pub(crate) fn executable(&self) -> &ResolvedCargoArtifact {
-        &self.executable
-    }
-}
-
 /// A builder for constructing and executing Cargo commands.
 ///
 /// `CargoBuilder` provides a fluent API for configuring Cargo build or run
@@ -128,7 +112,7 @@ impl<'a> CargoBuilder<'a> {
     /// # Errors
     ///
     /// Returns an error if any step of the build process fails.
-    pub async fn execute(mut self) -> anyhow::Result<CargoBuildOutcome> {
+    pub async fn execute(mut self) -> anyhow::Result<()> {
         // 1. Pre-build commands
         self.run_pre_build_cmds()?;
 
@@ -141,21 +125,22 @@ impl<'a> CargoBuilder<'a> {
         // 4. Post-build commands
         self.run_post_build_cmds()?;
 
-        Ok(outcome)
+        Ok(())
     }
 
     fn run_pre_build_cmds(&mut self) -> anyhow::Result<()> {
+        let process_context = self.tool.process_context()?;
         for cmd in &self.config.pre_build_cmds {
-            crate::process::shell_run_cmd(&self.tool.process_context(), cmd)?;
+            crate::process::shell_run_cmd(&process_context, cmd)?;
         }
         Ok(())
     }
 
-    async fn run_cargo(&mut self) -> anyhow::Result<CargoBuildOutcome> {
+    async fn run_cargo(&mut self) -> anyhow::Result<ResolvedCargoArtifact> {
         self.run_cargo_and_resolve_artifact().await
     }
 
-    async fn run_cargo_and_resolve_artifact(&mut self) -> anyhow::Result<CargoBuildOutcome> {
+    async fn run_cargo_and_resolve_artifact(&mut self) -> anyhow::Result<ResolvedCargoArtifact> {
         let (target_pkg_id, default_run) = self.target_package_info()?;
         let mut cmd = self.build_cargo_command().await?;
 
@@ -227,11 +212,11 @@ impl<'a> CargoBuilder<'a> {
             &self.config.package,
         )?;
 
-        Ok(CargoBuildOutcome::new(resolved))
+        Ok(resolved)
     }
 
     async fn build_cargo_command(&mut self) -> anyhow::Result<Command> {
-        let process_context = self.tool.process_context();
+        let process_context = self.tool.process_context()?;
         let mut cmd = crate::process::command("cargo", &process_context);
 
         cmd.arg(&self.command);
@@ -315,9 +300,7 @@ impl<'a> CargoBuilder<'a> {
     }
 
     /// Applies the resolved Cargo artifact to the legacy tool runtime state.
-    async fn handle_output(&mut self, outcome: &CargoBuildOutcome) -> anyhow::Result<()> {
-        let resolved = outcome.executable();
-
+    async fn handle_output(&mut self, resolved: &ResolvedCargoArtifact) -> anyhow::Result<()> {
         self.tool
             .set_elf_artifact_path(resolved.elf_path().to_path_buf())
             .await?;
@@ -334,8 +317,9 @@ impl<'a> CargoBuilder<'a> {
     }
 
     fn run_post_build_cmds(&mut self) -> anyhow::Result<()> {
+        let process_context = self.tool.process_context()?;
         for cmd in &self.config.post_build_cmds {
-            crate::process::shell_run_cmd(&self.tool.process_context(), cmd)?;
+            crate::process::shell_run_cmd(&process_context, cmd)?;
         }
         Ok(())
     }
@@ -593,9 +577,7 @@ mod tests {
         path::{Path, PathBuf},
     };
 
-    use super::{
-        CargoBuildOutcome, CargoBuilder, ResolvedCargoArtifact, select_executable_artifact,
-    };
+    use super::{CargoBuilder, ResolvedCargoArtifact, select_executable_artifact};
     use crate::{
         Tool, ToolConfig,
         build::config::{Cargo, CargoBuildProfile},
@@ -643,20 +625,6 @@ mod tests {
             "[x86_64-unknown-none]\ncargoargs = [\"--someboot-cargoarg\"]\nrustflags = [\"-Cdebuginfo=2\"]\n",
         )
         .unwrap();
-    }
-
-    #[test]
-    fn cargo_build_outcome_exposes_resolved_executable_paths() {
-        let outcome = CargoBuildOutcome::new(artifact("kernel"));
-
-        assert_eq!(
-            outcome.executable().elf_path(),
-            Path::new("/tmp/ostool-target/debug/kernel")
-        );
-        assert_eq!(
-            outcome.executable().cargo_artifact_dir(),
-            Path::new("/tmp/ostool-target/debug")
-        );
     }
 
     #[test]
@@ -787,7 +755,7 @@ mod tests {
     ///
     /// This covers post-resolution Tool state, not serde/config loading.
     #[tokio::test]
-    async fn handle_output_records_runtime_artifact_state_from_cargo_build_outcome() {
+    async fn handle_output_records_runtime_artifact_state_from_resolved_cargo_artifact() {
         let temp = tempfile::tempdir().unwrap();
         fs::write(
             temp.path().join("Cargo.toml"),
@@ -824,12 +792,12 @@ mod tests {
         })
         .unwrap();
 
-        let outcome = CargoBuildOutcome::new(ResolvedCargoArtifact {
+        let resolved = ResolvedCargoArtifact {
             elf_path: elf_path.clone(),
             cargo_artifact_dir: cargo_artifact_dir.clone(),
-        });
+        };
         let mut builder = CargoBuilder::build(&mut tool, &config, None).skip_objcopy(true);
-        builder.handle_output(&outcome).await.unwrap();
+        builder.handle_output(&resolved).await.unwrap();
         drop(builder);
 
         let expected_elf = elf_path.canonicalize().unwrap();

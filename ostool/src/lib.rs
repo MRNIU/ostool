@@ -61,11 +61,9 @@ mod tool;
 /// build options through an interactive terminal interface.
 pub mod menuconfig;
 
-/// Project layout, metadata, and variable expansion helpers.
-pub mod project;
+mod project;
 
-/// Process construction and shell hook helpers.
-pub mod process;
+mod process;
 
 /// Runtime execution modules for QEMU, TFTP, and U-Boot.
 ///

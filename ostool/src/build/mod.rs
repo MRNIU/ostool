@@ -143,7 +143,8 @@ impl Tool {
     ///
     /// Returns an error if the configuration cannot be loaded or the build fails.
     pub(crate) fn build_custom(&mut self, config: &Custom) -> anyhow::Result<()> {
-        crate::process::shell_run_cmd(&self.process_context(), &config.build_cmd)?;
+        let process_context = self.process_context()?;
+        crate::process::shell_run_cmd(&process_context, &config.build_cmd)?;
         Ok(())
     }
 
@@ -161,7 +162,6 @@ impl Tool {
         cargo_builder::CargoBuilder::build_auto(self, config)
             .execute()
             .await
-            .map(|_| ())
     }
 
     pub(crate) async fn prepare_runtime_artifacts(
@@ -197,7 +197,6 @@ impl Tool {
             .resolve_artifact_from_json(true)
             .execute()
             .await
-            .map(|_| ())
     }
 
     /// Builds and runs the project using Cargo with the specified runner.

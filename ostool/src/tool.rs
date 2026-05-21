@@ -1,8 +1,6 @@
 //! Legacy tool facade for workspace configuration, build, and run workflows.
 
 use std::{
-    env::current_dir,
-    ffi::OsStr,
     path::{Path, PathBuf},
     process::Command,
     sync::Arc,
@@ -24,7 +22,10 @@ use crate::{
         someboot,
     },
     ctx::AppContext,
-    utils::{PathResultExt, replace_placeholders},
+    invocation::Invocation,
+    process::ProcessContext,
+    project::{ProjectLayout, metadata, resolve_project_layout, variables::VariableScope},
+    utils::PathResultExt,
 };
 
 /// Static configuration used to initialize a [`Tool`].
@@ -60,18 +61,37 @@ pub struct ManifestContext {
     pub workspace_dir: PathBuf,
 }
 
+impl From<ProjectLayout> for ManifestContext {
+    fn from(layout: ProjectLayout) -> Self {
+        Self {
+            manifest_path: layout.manifest_path().to_path_buf(),
+            manifest_dir: layout.manifest_dir().to_path_buf(),
+            workspace_dir: layout.workspace_dir().to_path_buf(),
+        }
+    }
+}
+
 impl Tool {
     /// Creates a new tool from the provided configuration.
     pub fn new(config: ToolConfig) -> anyhow::Result<Self> {
-        let manifest = resolve_manifest_context(config.manifest.clone())?;
+        let layout = resolve_project_layout(config.manifest.clone())?;
+        Ok(Self::from_project_layout(config, layout))
+    }
 
-        Ok(Self {
+    #[doc(hidden)]
+    pub fn from_invocation(config: ToolConfig, invocation: Invocation) -> Self {
+        Self::from_project_layout(config, invocation.into_project_layout())
+    }
+
+    #[doc(hidden)]
+    pub fn from_project_layout(config: ToolConfig, layout: ProjectLayout) -> Self {
+        Self {
             config,
-            manifest_path: manifest.manifest_path,
-            manifest_dir: manifest.manifest_dir,
-            workspace_dir: manifest.workspace_dir,
+            manifest_path: layout.manifest_path().to_path_buf(),
+            manifest_dir: layout.manifest_dir().to_path_buf(),
+            workspace_dir: layout.workspace_dir().to_path_buf(),
             ctx: AppContext::default(),
-        })
+        }
     }
 
     pub fn ctx(&self) -> &AppContext {
@@ -142,72 +162,21 @@ impl Tool {
 
     /// Executes a shell command in the current context.
     pub(crate) fn shell_run_cmd(&self, cmd: &str) -> anyhow::Result<()> {
-        let mut command = match std::env::consts::OS {
-            "windows" => {
-                let mut command = self.command("powershell");
-                command.arg("-Command");
-                command
-            }
-            _ => {
-                let mut command = self.command("sh");
-                command.arg("-c");
-                command
-            }
-        };
-
-        command.arg(cmd);
-
-        if let Some(elf) = &self.ctx.artifacts.elf {
-            command.env("KERNEL_ELF", elf.display().to_string());
-        }
-
-        command.run()?;
-        Ok(())
+        crate::process::shell_run_cmd(&self.process_context(), cmd)
     }
 
     /// Creates a new command builder for the given program.
     pub(crate) fn command(&self, program: &str) -> crate::utils::Command {
-        let tool = self.clone();
-        let mut command =
-            crate::utils::Command::new(program, &self.manifest_dir, move |s| tool.replace_value(s));
-        command.env("WORKSPACE_FOLDER", self.workspace_dir.display().to_string());
-        command
+        crate::process::command(program, &self.process_context())
     }
 
     /// Gets the Cargo metadata for the current manifest.
     pub fn metadata(&self) -> anyhow::Result<Metadata> {
-        cargo_metadata::MetadataCommand::new()
-            .manifest_path(&self.manifest_path)
-            .no_deps()
-            .exec()
-            .with_context(|| {
-                format!(
-                    "failed to load cargo metadata from {}",
-                    self.manifest_path.display()
-                )
-            })
+        metadata::cargo_metadata(&self.project_layout())
     }
 
     pub(crate) fn resolve_package_manifest_dir(&self, package: &str) -> anyhow::Result<PathBuf> {
-        let metadata = self.metadata()?;
-        let Some(pkg) = metadata.packages.iter().find(|pkg| pkg.name == package) else {
-            bail!(
-                "package '{}' not found in cargo metadata under {}",
-                package,
-                self.manifest_dir().display()
-            );
-        };
-
-        pkg.manifest_path
-            .parent()
-            .map(|path| path.as_std_path().to_path_buf())
-            .ok_or_else(|| {
-                anyhow!(
-                    "package '{}' manifest has no parent: {}",
-                    package,
-                    pkg.manifest_path
-                )
-            })
+        metadata::package_manifest_dir(&self.project_layout(), package)
     }
 
     /// Sets the ELF artifact path and synchronizes derived runtime metadata.
@@ -408,34 +377,12 @@ impl Tool {
         )
     }
 
-    pub(crate) fn replace_value<S>(&self, value: S) -> String
-    where
-        S: AsRef<OsStr>,
-    {
-        self.replace_string(&value.as_ref().to_string_lossy())
-            .unwrap_or_else(|_| value.as_ref().to_string_lossy().into_owned())
-    }
-
     pub(crate) fn replace_string(&self, input: &str) -> anyhow::Result<String> {
-        let package_dir = self.package_root_for_variables()?;
-        let workspace_dir = self.workspace_dir.display().to_string();
-        let package_dir = package_dir.display().to_string();
-        let tmp_dir = std::env::temp_dir().display().to_string();
-
-        replace_placeholders(input, |placeholder| {
-            let value = match placeholder {
-                "workspace" | "workspaceFolder" => Some(workspace_dir.clone()),
-                "package" => Some(package_dir.clone()),
-                "tmpDir" => Some(tmp_dir.clone()),
-                p if p.starts_with("env:") => Some(std::env::var(&p[4..]).unwrap_or_default()),
-                _ => None,
-            };
-            Ok(value)
-        })
+        crate::project::variables::expand_variables(input, &self.variable_scope())
     }
 
     pub(crate) fn replace_path_variables(&self, path: PathBuf) -> anyhow::Result<PathBuf> {
-        Ok(PathBuf::from(self.replace_string(&path.to_string_lossy())?))
+        crate::project::variables::expand_path_variables(path, &self.variable_scope())
     }
 
     fn package_root_for_variables(&self) -> anyhow::Result<PathBuf> {
@@ -447,6 +394,30 @@ impl Tool {
         }
 
         Ok(self.manifest_dir.clone())
+    }
+
+    fn project_layout(&self) -> ProjectLayout {
+        ProjectLayout::from_manifest_parts(
+            self.manifest_path.clone(),
+            self.manifest_dir.clone(),
+            self.workspace_dir.clone(),
+        )
+    }
+
+    fn variable_scope(&self) -> VariableScope {
+        let package_dir = self
+            .package_root_for_variables()
+            .unwrap_or_else(|_| self.manifest_dir.clone());
+        VariableScope::for_package(&self.project_layout(), package_dir)
+    }
+
+    fn process_context(&self) -> ProcessContext {
+        ProcessContext::new(
+            self.manifest_dir.clone(),
+            self.workspace_dir.clone(),
+            self.variable_scope(),
+            self.ctx.artifacts.elf.clone(),
+        )
     }
 
     pub(crate) fn ui_hooks(&self) -> Vec<ElementHook> {
@@ -841,56 +812,7 @@ fn build_target_options(candidates: TargetCandidateSet<'_>) -> Vec<HookOption> {
 }
 
 pub fn resolve_manifest_context(input: Option<PathBuf>) -> anyhow::Result<ManifestContext> {
-    let manifest_path = resolve_manifest_path(input)?;
-    let manifest_dir = manifest_path
-        .parent()
-        .ok_or_else(|| anyhow!("manifest has no parent: {}", manifest_path.display()))?
-        .to_path_buf();
-
-    let metadata = cargo_metadata::MetadataCommand::new()
-        .manifest_path(&manifest_path)
-        .no_deps()
-        .exec()
-        .with_context(|| {
-            format!(
-                "failed to load cargo metadata from {}",
-                manifest_path.display()
-            )
-        })?;
-
-    Ok(ManifestContext {
-        manifest_path,
-        manifest_dir,
-        workspace_dir: PathBuf::from(metadata.workspace_root.as_std_path()),
-    })
-}
-
-fn resolve_manifest_path(input: Option<PathBuf>) -> anyhow::Result<PathBuf> {
-    let path = match input {
-        Some(path) => path,
-        None => current_dir().context("failed to get current working directory")?,
-    };
-
-    let manifest_path = if path.is_dir() {
-        path.join("Cargo.toml")
-    } else {
-        path
-    };
-
-    if manifest_path.file_name().and_then(|name| name.to_str()) != Some("Cargo.toml") {
-        bail!(
-            "manifest must be a Cargo.toml file or a directory containing Cargo.toml: {}",
-            manifest_path.display()
-        );
-    }
-
-    if !manifest_path.exists() {
-        bail!("Cargo.toml not found: {}", manifest_path.display());
-    }
-
-    manifest_path
-        .canonicalize()
-        .with_path("failed to canonicalize manifest path", &manifest_path)
+    resolve_project_layout(input).map(ManifestContext::from)
 }
 
 #[cfg(test)]

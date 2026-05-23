@@ -1,6 +1,6 @@
 //! Cargo build command builder and executor.
 //!
-//! This module provides the [`CargoBuilder`] type for constructing and executing
+//! This module provides the [`CargoBuildPipeline`] type for constructing and executing
 //! Cargo build commands with customizable options, environment variables, and
 //! pre/post build hooks.
 
@@ -17,7 +17,11 @@ use colored::Colorize;
 
 use crate::{
     Tool,
+    artifact::runtime::{RuntimeArtifactOptions, prepare_runtime_artifacts},
     build::{
+        artifact_selector::{
+            CargoExecutableArtifact, ResolvedCargoArtifact, select_executable_artifact,
+        },
         config::{Cargo, CargoBuildProfile},
         someboot,
     },
@@ -25,30 +29,30 @@ use crate::{
 };
 
 #[derive(Debug, Clone)]
-pub(crate) struct ResolvedCargoArtifact {
-    elf_path: PathBuf,
-    cargo_artifact_dir: PathBuf,
+pub(crate) struct CargoBuildOutcome {
+    resolved_artifact: ResolvedCargoArtifact,
 }
 
-impl ResolvedCargoArtifact {
-    pub(crate) fn elf_path(&self) -> &Path {
-        &self.elf_path
+impl CargoBuildOutcome {
+    pub(crate) fn new(resolved_artifact: ResolvedCargoArtifact) -> Self {
+        Self { resolved_artifact }
     }
 
-    pub(crate) fn cargo_artifact_dir(&self) -> &Path {
-        &self.cargo_artifact_dir
+    pub(crate) fn resolved_artifact(&self) -> &ResolvedCargoArtifact {
+        &self.resolved_artifact
     }
 }
 
 /// A builder for constructing and executing Cargo commands.
 ///
-/// `CargoBuilder` provides a fluent API for configuring Cargo build or run
+/// `CargoBuildPipeline` provides a fluent API for configuring Cargo build or run
 /// commands with custom arguments, environment variables, and build hooks.
 ///
 /// This builder is an internal implementation detail used by [`Tool`].
-pub struct CargoBuilder<'a> {
+pub struct CargoBuildPipeline<'a> {
     tool: &'a mut Tool,
     config: &'a Cargo,
+    cargo_program: PathBuf,
     command: String,
     extra_args: Vec<String>,
     extra_envs: HashMap<String, String>,
@@ -57,8 +61,8 @@ pub struct CargoBuilder<'a> {
     config_path: Option<PathBuf>,
 }
 
-impl<'a> CargoBuilder<'a> {
-    /// Creates a new `CargoBuilder` for executing `cargo build`.
+impl<'a> CargoBuildPipeline<'a> {
+    /// Creates a new `CargoBuildPipeline` for executing `cargo build`.
     ///
     /// # Arguments
     ///
@@ -69,6 +73,7 @@ impl<'a> CargoBuilder<'a> {
         Self {
             tool,
             config,
+            cargo_program: PathBuf::from("cargo"),
             command: "build".to_string(),
             extra_args: Vec::new(),
             extra_envs: HashMap::new(),
@@ -104,6 +109,12 @@ impl<'a> CargoBuilder<'a> {
         self
     }
 
+    #[cfg(test)]
+    fn cargo_program(mut self, program: impl Into<PathBuf>) -> Self {
+        self.cargo_program = program.into();
+        self
+    }
+
     /// Executes the configured Cargo command.
     ///
     /// This runs pre-build commands, executes Cargo, handles output artifacts,
@@ -112,20 +123,21 @@ impl<'a> CargoBuilder<'a> {
     /// # Errors
     ///
     /// Returns an error if any step of the build process fails.
-    pub async fn execute(mut self) -> anyhow::Result<()> {
+    pub async fn execute(mut self) -> anyhow::Result<CargoBuildOutcome> {
         // 1. Pre-build commands
         self.run_pre_build_cmds()?;
 
         // 2. Build and run cargo
-        let outcome = self.run_cargo().await?;
+        let resolved = self.run_cargo().await?;
+        let outcome = CargoBuildOutcome::new(resolved);
 
         // 3. Handle output
-        self.handle_output(&outcome).await?;
+        self.handle_output(outcome.resolved_artifact()).await?;
 
         // 4. Post-build commands
         self.run_post_build_cmds()?;
 
-        Ok(())
+        Ok(outcome)
     }
 
     fn run_pre_build_cmds(&mut self) -> anyhow::Result<()> {
@@ -158,7 +170,7 @@ impl<'a> CargoBuilder<'a> {
             .ok_or_else(|| anyhow!("failed to capture cargo stdout for message parsing"))?;
         let reader = BufReader::new(stdout);
 
-        let mut executable_artifacts: Vec<(String, ResolvedCargoArtifact)> = Vec::new();
+        let mut executable_artifacts: Vec<CargoExecutableArtifact> = Vec::new();
         for message in Message::parse_stream(reader) {
             let message = message.context("failed to parse cargo JSON message stream")?;
             match message {
@@ -177,12 +189,9 @@ impl<'a> CargoBuilder<'a> {
                                 )
                             })?
                             .to_path_buf();
-                        executable_artifacts.push((
+                        executable_artifacts.push(CargoExecutableArtifact::new(
                             artifact.target.name,
-                            ResolvedCargoArtifact {
-                                elf_path,
-                                cargo_artifact_dir,
-                            },
+                            ResolvedCargoArtifact::new(elf_path, cargo_artifact_dir),
                         ));
                     }
                 }
@@ -217,7 +226,7 @@ impl<'a> CargoBuilder<'a> {
 
     async fn build_cargo_command(&mut self) -> anyhow::Result<Command> {
         let process_context = self.tool.process_context()?;
-        let mut cmd = crate::process::command("cargo", &process_context);
+        let mut cmd = crate::process::command(self.cargo_program.as_os_str(), &process_context);
 
         cmd.arg(&self.command);
 
@@ -301,17 +310,20 @@ impl<'a> CargoBuilder<'a> {
 
     /// Applies the resolved Cargo artifact to the legacy tool runtime state.
     async fn handle_output(&mut self, resolved: &ResolvedCargoArtifact) -> anyhow::Result<()> {
-        self.tool
-            .set_elf_artifact_path(resolved.elf_path().to_path_buf())
-            .await?;
-        self.tool.ctx.artifacts.cargo_artifact_dir =
-            Some(resolved.cargo_artifact_dir().to_path_buf());
-        self.tool.ctx.artifacts.runtime_artifact_dir =
-            Some(resolved.cargo_artifact_dir().to_path_buf());
-
-        if self.config.to_bin && !self.skip_objcopy {
-            self.tool.objcopy_output_bin()?;
-        }
+        let process_context = self.tool.process_context()?;
+        let prepared = prepare_runtime_artifacts(
+            &process_context,
+            RuntimeArtifactOptions {
+                elf_path: resolved.elf_path().to_path_buf(),
+                to_bin: self.config.to_bin && !self.skip_objcopy,
+                bin_dir: self.tool.bin_dir(),
+                debug: self.tool.debug_enabled(),
+                cargo_artifact_dir: Some(resolved.cargo_artifact_dir().to_path_buf()),
+                strip_elf: false,
+                objcopy_program: PathBuf::from("rust-objcopy"),
+            },
+        )?;
+        self.tool.apply_prepared_runtime_artifacts(prepared);
 
         Ok(())
     }
@@ -513,92 +525,18 @@ impl<'a> CargoBuilder<'a> {
     }
 }
 
-fn select_executable_artifact(
-    executable_artifacts: &[(String, ResolvedCargoArtifact)],
-    explicit_bin: Option<&str>,
-    default_run: Option<&str>,
-    package: &str,
-) -> anyhow::Result<ResolvedCargoArtifact> {
-    if let Some(bin) = explicit_bin {
-        return executable_artifacts
-            .iter()
-            .rev()
-            .find(|(name, _)| name == bin)
-            .map(|(_, artifact)| artifact.clone())
-            .ok_or_else(|| {
-                anyhow!(
-                    "binary target `{bin}` was not built for package `{package}`; check system.Cargo.bin or --bin"
-                )
-            });
-    }
-
-    if executable_artifacts.is_empty() {
-        bail!(
-            "no executable bin artifact found in cargo JSON output for package `{package}`; ostool currently resolves only Cargo bin targets"
-        );
-    }
-
-    if let Some((_, artifact)) = executable_artifacts
-        .iter()
-        .rev()
-        .find(|(name, _)| name == package)
-    {
-        return Ok(artifact.clone());
-    }
-
-    if let Some(default_bin) = default_run
-        && let Some((_, artifact)) = executable_artifacts
-            .iter()
-            .rev()
-            .find(|(name, _)| name == default_bin)
-    {
-        return Ok(artifact.clone());
-    }
-
-    if executable_artifacts.len() == 1 {
-        return Ok(executable_artifacts[0].1.clone());
-    }
-
-    let bins = executable_artifacts
-        .iter()
-        .map(|(name, _)| name.as_str())
-        .collect::<Vec<_>>()
-        .join(", ");
-    bail!(
-        "package `{package}` has multiple binary targets ({bins}); pass system.Cargo.bin or --bin"
-    )
-}
-
 #[cfg(test)]
 mod tests {
-    use std::{
-        collections::HashMap,
-        fs,
-        path::{Path, PathBuf},
-    };
+    use std::{collections::HashMap, fs, path::Path};
 
-    use super::{CargoBuilder, ResolvedCargoArtifact, select_executable_artifact};
+    use super::CargoBuildPipeline;
     use crate::{
         Tool, ToolConfig,
-        build::config::{Cargo, CargoBuildProfile},
+        build::{
+            artifact_selector::ResolvedCargoArtifact,
+            config::{Cargo, CargoBuildProfile},
+        },
     };
-
-    fn artifact(name: &str) -> ResolvedCargoArtifact {
-        let cargo_artifact_dir = PathBuf::from("/tmp/ostool-target/debug");
-        ResolvedCargoArtifact {
-            elf_path: cargo_artifact_dir.join(name),
-            cargo_artifact_dir,
-        }
-    }
-
-    fn select(
-        artifacts: &[(String, ResolvedCargoArtifact)],
-        explicit_bin: Option<&str>,
-        default_run: Option<&str>,
-        package: &str,
-    ) -> anyhow::Result<ResolvedCargoArtifact> {
-        select_executable_artifact(artifacts, explicit_bin, default_run, package)
-    }
 
     fn write_someboot_workspace(root: &Path) {
         fs::write(
@@ -627,97 +565,6 @@ mod tests {
         .unwrap();
     }
 
-    #[test]
-    fn select_executable_artifact_uses_explicit_bin_first() {
-        let artifacts = vec![
-            ("kernel".to_string(), artifact("kernel")),
-            ("kernel-qemu".to_string(), artifact("kernel-qemu")),
-        ];
-
-        let selected = select(&artifacts, Some("kernel-qemu"), None, "kernel").unwrap();
-
-        assert_eq!(
-            selected.elf_path,
-            Path::new("/tmp/ostool-target/debug/kernel-qemu")
-        );
-    }
-
-    #[test]
-    fn select_executable_artifact_errors_when_explicit_bin_was_not_built() {
-        let artifacts = vec![("kernel".to_string(), artifact("kernel"))];
-
-        let err = select(&artifacts, Some("missing-bin"), None, "kernel").unwrap_err();
-
-        assert!(
-            err.to_string()
-                .contains("binary target `missing-bin` was not built")
-        );
-    }
-
-    #[test]
-    fn select_executable_artifact_prefers_package_name_before_default_run() {
-        let artifacts = vec![
-            ("helper".to_string(), artifact("helper")),
-            ("kernel".to_string(), artifact("kernel")),
-        ];
-
-        let selected = select(&artifacts, None, Some("helper"), "kernel").unwrap();
-
-        assert_eq!(
-            selected.elf_path,
-            Path::new("/tmp/ostool-target/debug/kernel")
-        );
-    }
-
-    #[test]
-    fn select_executable_artifact_uses_default_run_without_package_name_binary() {
-        let artifacts = vec![
-            ("helper".to_string(), artifact("helper")),
-            ("boot-test".to_string(), artifact("boot-test")),
-        ];
-
-        let selected = select(&artifacts, None, Some("boot-test"), "kernel").unwrap();
-
-        assert_eq!(
-            selected.elf_path,
-            Path::new("/tmp/ostool-target/debug/boot-test")
-        );
-    }
-
-    #[test]
-    fn select_executable_artifact_uses_single_binary_as_fallback() {
-        let artifacts = vec![("helper".to_string(), artifact("helper"))];
-
-        let selected = select(&artifacts, None, None, "kernel").unwrap();
-
-        assert_eq!(
-            selected.elf_path,
-            Path::new("/tmp/ostool-target/debug/helper")
-        );
-    }
-
-    #[test]
-    fn select_executable_artifact_errors_on_empty_cargo_output() {
-        let err = select(&[], None, None, "kernel").unwrap_err();
-
-        assert!(err.to_string().contains("no executable bin artifact found"));
-    }
-
-    #[test]
-    fn select_executable_artifact_errors_on_ambiguous_multiple_binaries() {
-        let artifacts = vec![
-            ("kernel-qemu".to_string(), artifact("kernel-qemu")),
-            ("kernel-uboot".to_string(), artifact("kernel-uboot")),
-        ];
-
-        let err = select(&artifacts, None, None, "kernel").unwrap_err();
-
-        let rendered = err.to_string();
-        assert!(rendered.contains("multiple binary targets"));
-        assert!(rendered.contains("kernel-qemu"));
-        assert!(rendered.contains("kernel-uboot"));
-    }
-
     #[tokio::test]
     async fn build_cargo_command_skips_someboot_args_when_cargo_config_disables_them() {
         let temp = tempfile::tempdir().unwrap();
@@ -736,7 +583,7 @@ mod tests {
             ..Default::default()
         })
         .unwrap();
-        let mut builder = CargoBuilder::build(&mut tool, &config, None).skip_objcopy(true);
+        let mut builder = CargoBuildPipeline::build(&mut tool, &config, None).skip_objcopy(true);
         let cmd = builder.build_cargo_command().await.unwrap();
         let args: Vec<String> = cmd
             .get_args()
@@ -792,11 +639,8 @@ mod tests {
         })
         .unwrap();
 
-        let resolved = ResolvedCargoArtifact {
-            elf_path: elf_path.clone(),
-            cargo_artifact_dir: cargo_artifact_dir.clone(),
-        };
-        let mut builder = CargoBuilder::build(&mut tool, &config, None).skip_objcopy(true);
+        let resolved = ResolvedCargoArtifact::new(elf_path.clone(), cargo_artifact_dir.clone());
+        let mut builder = CargoBuildPipeline::build(&mut tool, &config, None).skip_objcopy(true);
         builder.handle_output(&resolved).await.unwrap();
         drop(builder);
 
@@ -812,5 +656,72 @@ mod tests {
             Some(&cargo_artifact_dir)
         );
         assert!(tool.ctx.arch.is_some());
+    }
+
+    #[tokio::test]
+    async fn execute_returns_resolved_cargo_artifact_outcome() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(
+            temp.path().join("Cargo.toml"),
+            "[package]\nname = \"kernel\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+        fs::create_dir_all(temp.path().join("src")).unwrap();
+        fs::write(temp.path().join("src/main.rs"), "fn main() {}\n").unwrap();
+
+        let target_dir = temp.path().join("target");
+        fs::create_dir_all(&target_dir).unwrap();
+        fs::copy(std::env::current_exe().unwrap(), target_dir.join("kernel")).unwrap();
+
+        let config = Cargo {
+            target: "aarch64-unknown-none".into(),
+            package: "kernel".into(),
+            profile: Some(CargoBuildProfile::Debug),
+            ..Default::default()
+        };
+
+        let mut tool = Tool::new(ToolConfig {
+            manifest: Some(temp.path().to_path_buf()),
+            ..Default::default()
+        })
+        .unwrap();
+        let package_id = tool
+            .metadata()
+            .unwrap()
+            .packages
+            .iter()
+            .find(|package| package.name == "kernel")
+            .unwrap()
+            .id
+            .to_string();
+
+        let cargo_bin = temp.path().join("cargo-bin");
+        fs::write(
+            &cargo_bin,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' '{{\"reason\":\"compiler-artifact\",\"package_id\":\"{package_id}\",\"manifest_path\":\"{root}/Cargo.toml\",\"target\":{{\"kind\":[\"bin\"],\"crate_types\":[\"bin\"],\"name\":\"kernel\",\"src_path\":\"{root}/src/main.rs\",\"edition\":\"2024\",\"doc\":true,\"doctest\":false,\"test\":true}},\"profile\":{{\"opt_level\":\"0\",\"debuginfo\":0,\"debug_assertions\":true,\"overflow_checks\":true,\"test\":false}},\"features\":[],\"filenames\":[],\"executable\":\"{root}/target/kernel\",\"fresh\":false}}'\n",
+                root = temp.path().display()
+            ),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = fs::metadata(&cargo_bin).unwrap().permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&cargo_bin, permissions).unwrap();
+        }
+
+        let outcome = CargoBuildPipeline::build(&mut tool, &config, None)
+            .skip_objcopy(true)
+            .cargo_program(&cargo_bin)
+            .execute()
+            .await
+            .unwrap();
+
+        assert_eq!(
+            outcome.resolved_artifact().elf_path(),
+            target_dir.join("kernel")
+        );
     }
 }

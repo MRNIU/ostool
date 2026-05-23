@@ -23,7 +23,7 @@ use std::path::Path;
 use crate::{
     Tool,
     build::{
-        cargo_builder::CargoBuilder,
+        cargo_pipeline::CargoBuildPipeline,
         config::{Cargo, Custom},
     },
     run::{
@@ -32,8 +32,10 @@ use crate::{
     },
 };
 
-/// Cargo builder implementation for building projects.
-mod cargo_builder;
+mod artifact_selector;
+
+/// Cargo pipeline implementation for building projects.
+mod cargo_pipeline;
 
 /// Build configuration types and structures.
 pub mod config;
@@ -159,9 +161,10 @@ impl Tool {
     /// Returns an error if the Cargo build fails.
     pub async fn cargo_build(&mut self, config: &Cargo) -> anyhow::Result<()> {
         self.sync_cargo_context(config);
-        cargo_builder::CargoBuilder::build_auto(self, config)
+        cargo_pipeline::CargoBuildPipeline::build_auto(self, config)
             .execute()
-            .await
+            .await?;
+        Ok(())
     }
 
     pub(crate) async fn prepare_runtime_artifacts(
@@ -191,12 +194,13 @@ impl Tool {
         debug: bool,
     ) -> anyhow::Result<()> {
         let build_config_path = self.ctx.build_config_path.clone();
-        CargoBuilder::build(self, config, build_config_path)
+        CargoBuildPipeline::build(self, config, build_config_path)
             .debug(debug)
             .skip_objcopy(true)
             .resolve_artifact_from_json(true)
             .execute()
-            .await
+            .await?;
+        Ok(())
     }
 
     /// Builds and runs the project using Cargo with the specified runner.
@@ -219,7 +223,7 @@ impl Tool {
 
         let debug = matches!(runner, CargoRunnerKind::Qemu(args) if args.debug);
 
-        CargoBuilder::build(self, config, build_config_path)
+        CargoBuildPipeline::build(self, config, build_config_path)
             .debug(debug)
             .skip_objcopy(true)
             .resolve_artifact_from_json(true)

@@ -633,25 +633,20 @@ R1 按 R1a-R1i 保守切片执行。切片编号是执行顺序，不改变最�
 `handle_output()` 写回 legacy runtime state。后续如果继续拆 build pipeline，可以在真实需要时再
 引入 `CargoBuildOutcome` 命名；不要为了符合旧计划名称而补一个 accessor-only wrapper。
 
+因此，R1d 在 #108 范围内已经完成。下面的 checklist 只记录已经随 #108 收口的 seam；更大的
+pipeline 文件拆分移到“后续候选拆分”，不再算作 R1d 未完成项。
+
 **文件：**
 
-- Create: `ostool/src/build/artifact_selector.rs`
-- Create or rename: `ostool/src/build/cargo_pipeline.rs`
-- Delete or stop using: `ostool/src/build/cargo_builder.rs`
+- Modify: `ostool/src/build/cargo_builder.rs`
 - Modify: `ostool/src/build/mod.rs`
-- Modify: `ostool/src/main.rs`
-- Modify: `ostool/tests/ui/fail_cargo_builder.rs`
 
 步骤：
 
 - [x] 保持 Cargo JSON executable selection 为独立函数并补测试；#108 未单独拆出 `artifact_selector.rs`。
 - [x] 定义 `ResolvedCargoArtifact`，表达 executable path 和 Cargo artifact dir。
 - [x] 仅在后续 pipeline 拆分确实需要时，再定义 `CargoBuildOutcome`。
-- [ ] 把 `CargoBuilder` lifecycle 改造成 `CargoBuildPipeline` 或 `run_cargo_build()`。
-- [ ] 如果 pipeline 不需要持有状态，优先使用 `run_cargo_build()` module function。
-- [ ] `CargoBuildPipeline` 或 `run_cargo_build()` 接收 `&ProjectLayout`、`&InvocationOptions`、`&ActiveCargoBuild` 和 `ProcessContext` 所需窄输入。
-- [ ] 后续 `CargoBuildPipeline` 或 module function 返回 explicit build facts，不接收
-  `&mut InvocationState`。
+- [x] `CargoBuilder` 先解析 explicit build facts，再由 legacy state bridge 写回 `Tool` runtime state。
 - [x] 保持 pre-build command execution order。
 - [x] 保持 Cargo command arguments、features、`profile`、log feature、target dir、package、bin、extra config、`args` 和 message format。
 - [x] 保持 post-build command execution order 和 `KERNEL_ELF` 注入语义。
@@ -672,6 +667,15 @@ R1 按 R1a-R1i 保守切片执行。切片编号是执行顺序，不改变最�
 - `CargoBuildPipeline` 不生成 runtime `.elf` / `.bin`。
 - `CargoBuildPipeline` 返回 build facts；orchestration 层更新 state。
 - 如果 struct 只包一层函数调用，删除 struct，保留 module function。
+
+后续候选拆分，不计入 R1d 当前完成状态：
+
+- [ ] 如 `cargo_builder.rs` 继续膨胀，再把 Cargo JSON executable selection 移到 `artifact_selector.rs`。
+- [ ] 如 build lifecycle 需要独立测试 seam，再把 `CargoBuilder` 改造成 `CargoBuildPipeline`
+  或 `run_cargo_build()`。
+- [ ] 后续 pipeline 拆分应接收 `&ProjectLayout`、`&InvocationOptions`、active build input 和
+  `ProcessContext` 所需窄输入，而不是扩大 `Tool`。
+- [ ] 后续 pipeline 或 module function 返回 explicit build facts，不接收 `&mut InvocationState`。
 
 ### 任务 5 / R1e：抽出 RuntimeArtifactPreparer
 

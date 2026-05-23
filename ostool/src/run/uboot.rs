@@ -40,6 +40,7 @@ use crate::{
             BoxedAsyncRead, BoxedAsyncWrite, SerialStreamTasks, connect_serial_stream,
         },
     },
+    project::variables::{self, VariableScope},
     run::{
         output_matcher::{
             ByteStreamMatcher, MATCH_DRAIN_DURATION, compile_regexes, print_match_event,
@@ -127,46 +128,46 @@ impl UbootConfig {
         }
     }
 
-    fn replace_strings(&mut self, tool: &Tool) -> anyhow::Result<()> {
+    fn replace_strings(&mut self, scope: &VariableScope) -> anyhow::Result<()> {
         self.dtb_file = self
             .dtb_file
             .as_deref()
-            .map(|value| tool.replace_string(value))
+            .map(|value| variables::expand_variables(value, scope))
             .transpose()?;
         self.kernel_load_addr = self
             .kernel_load_addr
             .as_deref()
-            .map(|value| tool.replace_string(value))
+            .map(|value| variables::expand_variables(value, scope))
             .transpose()?;
         self.fit_load_addr = self
             .fit_load_addr
             .as_deref()
-            .map(|value| tool.replace_string(value))
+            .map(|value| variables::expand_variables(value, scope))
             .transpose()?;
         self.bootm_addr = self
             .bootm_addr
             .as_deref()
-            .map(|value| tool.replace_string(value))
+            .map(|value| variables::expand_variables(value, scope))
             .transpose()?;
         self.board_reset_cmd = self
             .board_reset_cmd
             .as_deref()
-            .map(|value| tool.replace_string(value))
+            .map(|value| variables::expand_variables(value, scope))
             .transpose()?;
         self.board_power_off_cmd = self
             .board_power_off_cmd
             .as_deref()
-            .map(|value| tool.replace_string(value))
+            .map(|value| variables::expand_variables(value, scope))
             .transpose()?;
         self.success_regex = self
             .success_regex
             .iter()
-            .map(|value| tool.replace_string(value))
+            .map(|value| variables::expand_variables(value, scope))
             .collect::<anyhow::Result<Vec<_>>>()?;
         self.fail_regex = self
             .fail_regex
             .iter()
-            .map(|value| tool.replace_string(value))
+            .map(|value| variables::expand_variables(value, scope))
             .collect::<anyhow::Result<Vec<_>>>()?;
         self.uboot_cmd = self
             .uboot_cmd
@@ -174,21 +175,21 @@ impl UbootConfig {
             .map(|values| {
                 values
                     .iter()
-                    .map(|value| tool.replace_string(value))
+                    .map(|value| variables::expand_variables(value, scope))
                     .collect::<anyhow::Result<Vec<_>>>()
             })
             .transpose()?;
         self.shell_prefix = self
             .shell_prefix
             .as_deref()
-            .map(|value| tool.replace_string(value))
+            .map(|value| variables::expand_variables(value, scope))
             .transpose()?;
         self.shell_init_cmd = self
             .shell_init_cmd
             .as_deref()
-            .map(|value| tool.replace_string(value))
+            .map(|value| variables::expand_variables(value, scope))
             .transpose()?;
-        self.local.replace_strings(tool)?;
+        self.local.replace_strings(scope)?;
         Ok(())
     }
 
@@ -205,13 +206,7 @@ impl UbootConfig {
     }
 
     fn addr_int(&self, addr_str: Option<&String>) -> Option<u64> {
-        addr_str.as_ref().and_then(|addr_str| {
-            if addr_str.starts_with("0x") || addr_str.starts_with("0X") {
-                u64::from_str_radix(&addr_str[2..], 16).ok()
-            } else {
-                addr_str.parse::<u64>().ok()
-            }
-        })
+        parse_addr_int(addr_str)
     }
 
     fn normalize(&mut self, config_name: &str) -> anyhow::Result<()> {
@@ -227,30 +222,40 @@ impl UbootConfig {
     }
 }
 
+fn parse_addr_int(addr_str: Option<&String>) -> Option<u64> {
+    addr_str.as_ref().and_then(|addr_str| {
+        if addr_str.starts_with("0x") || addr_str.starts_with("0X") {
+            u64::from_str_radix(&addr_str[2..], 16).ok()
+        } else {
+            addr_str.parse::<u64>().ok()
+        }
+    })
+}
+
 impl LocalUbootConfig {
-    fn replace_strings(&mut self, tool: &Tool) -> anyhow::Result<()> {
+    fn replace_strings(&mut self, scope: &VariableScope) -> anyhow::Result<()> {
         self.serial = self
             .serial
             .as_deref()
-            .map(|value| tool.replace_string(value))
+            .map(|value| variables::expand_variables(value, scope))
             .transpose()?;
         self.baud_rate = self
             .baud_rate
             .as_deref()
-            .map(|value| tool.replace_string(value))
+            .map(|value| variables::expand_variables(value, scope))
             .transpose()?;
         self.board_reset_cmd = self
             .board_reset_cmd
             .as_deref()
-            .map(|value| tool.replace_string(value))
+            .map(|value| variables::expand_variables(value, scope))
             .transpose()?;
         self.board_power_off_cmd = self
             .board_power_off_cmd
             .as_deref()
-            .map(|value| tool.replace_string(value))
+            .map(|value| variables::expand_variables(value, scope))
             .transpose()?;
         if let Some(net) = &mut self.net {
-            net.replace_strings(tool)?;
+            net.replace_strings(scope)?;
         }
         Ok(())
     }
@@ -268,27 +273,27 @@ pub struct Net {
 }
 
 impl Net {
-    fn replace_strings(&mut self, tool: &Tool) -> anyhow::Result<()> {
-        self.interface = tool.replace_string(&self.interface)?;
+    fn replace_strings(&mut self, scope: &VariableScope) -> anyhow::Result<()> {
+        self.interface = variables::expand_variables(&self.interface, scope)?;
         self.board_ip = self
             .board_ip
             .as_deref()
-            .map(|value| tool.replace_string(value))
+            .map(|value| variables::expand_variables(value, scope))
             .transpose()?;
         self.gatewayip = self
             .gatewayip
             .as_deref()
-            .map(|value| tool.replace_string(value))
+            .map(|value| variables::expand_variables(value, scope))
             .transpose()?;
         self.netmask = self
             .netmask
             .as_deref()
-            .map(|value| tool.replace_string(value))
+            .map(|value| variables::expand_variables(value, scope))
             .transpose()?;
         self.tftp_dir = self
             .tftp_dir
             .as_deref()
-            .map(|value| tool.replace_string(value))
+            .map(|value| variables::expand_variables(value, scope))
             .transpose()?;
         Ok(())
     }
@@ -317,8 +322,9 @@ impl Tool {
         path: &Path,
     ) -> anyhow::Result<UbootConfig> {
         self.sync_cargo_context(cargo);
-        let config_path = self.replace_path_variables(path.to_path_buf())?;
-        read_uboot_config_at_path(self, config_path).await
+        let scope = self.variable_scope()?;
+        let config_path = variables::expand_path_variables(path, &scope)?;
+        read_uboot_config_at_path(&scope, config_path).await
     }
 
     pub async fn ensure_uboot_config_for_cargo(
@@ -337,14 +343,16 @@ impl Tool {
         dir: &Path,
     ) -> anyhow::Result<UbootConfig> {
         self.sync_cargo_context(cargo);
-        let dir = self.replace_path_variables(dir.to_path_buf())?;
-        ensure_uboot_config_at_path(self, dir.join(".uboot.toml"), self.default_uboot_config())
+        let scope = self.variable_scope()?;
+        let dir = variables::expand_path_variables(dir, &scope)?;
+        ensure_uboot_config_at_path(&scope, dir.join(".uboot.toml"), self.default_uboot_config())
             .await
     }
 
     pub async fn ensure_uboot_config_in_dir(&mut self, dir: &Path) -> anyhow::Result<UbootConfig> {
-        let dir = self.replace_path_variables(dir.to_path_buf())?;
-        ensure_uboot_config_at_path(self, dir.join(".uboot.toml"), self.default_uboot_config())
+        let scope = self.variable_scope()?;
+        let dir = variables::expand_path_variables(dir, &scope)?;
+        ensure_uboot_config_at_path(&scope, dir.join(".uboot.toml"), self.default_uboot_config())
             .await
     }
 
@@ -352,8 +360,9 @@ impl Tool {
         &mut self,
         path: &Path,
     ) -> anyhow::Result<UbootConfig> {
-        let config_path = self.replace_path_variables(path.to_path_buf())?;
-        read_uboot_config_at_path(self, config_path).await
+        let scope = self.variable_scope()?;
+        let config_path = variables::expand_path_variables(path, &scope)?;
+        read_uboot_config_at_path(&scope, config_path).await
     }
 
     pub async fn run_uboot(
@@ -363,7 +372,8 @@ impl Tool {
     ) -> anyhow::Result<()> {
         let _ = options.show_output;
         let mut config = config.clone();
-        config.replace_strings(self)?;
+        let scope = self.variable_scope()?;
+        config.replace_strings(&scope)?;
         config.normalize("U-Boot runtime config")?;
         let backend = LocalBackend::new(config.local.clone());
         let mut runner = Runner::new(self, config, backend);
@@ -384,7 +394,7 @@ impl Tool {
 }
 
 async fn read_uboot_config_at_path(
-    tool: &Tool,
+    variables: &VariableScope,
     config_path: PathBuf,
 ) -> anyhow::Result<UbootConfig> {
     let mut config: UbootConfig = fs::read_to_string(&config_path)
@@ -395,18 +405,18 @@ async fn read_uboot_config_at_path(
                 format!("failed to parse U-Boot config: {}", config_path.display())
             })
         })?;
-    config.replace_strings(tool)?;
+    config.replace_strings(variables)?;
     config.normalize(&format!("U-Boot config {}", config_path.display()))?;
     Ok(config)
 }
 
 async fn ensure_uboot_config_at_path(
-    tool: &Tool,
+    variables: &VariableScope,
     config_path: PathBuf,
     default_config: UbootConfig,
 ) -> anyhow::Result<UbootConfig> {
     let mut config = match fs::read_to_string(&config_path).await {
-        Ok(_) => return read_uboot_config_at_path(tool, config_path).await,
+        Ok(_) => return read_uboot_config_at_path(variables, config_path).await,
         Err(err) if err.kind() == io::ErrorKind::NotFound => {
             let config = default_config;
             fs::write(&config_path, toml::to_string_pretty(&config)?)
@@ -417,7 +427,7 @@ async fn ensure_uboot_config_at_path(
         Err(err) => return Err(err.into()),
     };
 
-    config.replace_strings(tool)?;
+    config.replace_strings(variables)?;
     config.normalize(&format!("U-Boot config {}", config_path.display()))?;
     Ok(config)
 }
@@ -451,6 +461,7 @@ struct ResolvedRuntime {
     static_ip: bool,
     kernel_load_addr: Option<u64>,
     fit_load_addr: Option<u64>,
+    bootm_addr: Option<u64>,
     use_tftp: bool,
 }
 
@@ -645,7 +656,8 @@ impl RunnerBackend for LocalBackend {
         if let Some(cmd) = self.config.board_reset_cmd.as_deref()
             && !cmd.trim().is_empty()
         {
-            tool.shell_run_cmd(cmd)?;
+            let process_context = tool.process_context()?;
+            crate::process::shell_run_cmd(&process_context, cmd)?;
         }
         Ok(())
     }
@@ -704,7 +716,9 @@ impl RunnerBackend for LocalBackend {
     async fn after_run(&mut self, tool: &Tool) -> anyhow::Result<()> {
         if let Some(cmd) = self.config.board_power_off_cmd.as_deref()
             && !cmd.trim().is_empty()
-            && let Err(err) = tool.shell_run_cmd(cmd)
+            && let Err(err) = tool
+                .process_context()
+                .and_then(|context| crate::process::shell_run_cmd(&context, cmd))
         {
             log::warn!("board power-off command failed: {err:#}");
         }
@@ -822,8 +836,10 @@ impl RunnerBackend for RemoteBackend {
             gateway_ip: profile.gatewayip.clone(),
             board_ip: profile.board_ip.clone(),
             static_ip,
+            kernel_load_addr: parse_addr_int(profile.kernel_load_addr.as_ref()),
+            fit_load_addr: parse_addr_int(profile.fit_load_addr.as_ref()),
+            bootm_addr: parse_addr_int(profile.bootm_addr.as_ref()),
             use_tftp: profile.use_tftp,
-            ..Default::default()
         })
     }
 
@@ -1245,24 +1261,26 @@ where
 
         let prepared = self.backend.stage_fit_image(&fitimage, &runtime).await?;
 
+        let bootm_arg = self.resolved_bootm_arg(fit_loadaddr, &runtime);
         let bootcmd = if let Some(fitname) = prepared.bootfile.as_deref() {
             if let Some(request) = build_network_boot_request(
                 runtime.static_ip,
                 net_ok,
                 prepared.network_transfer_ready,
                 fitname,
+                bootm_arg,
             ) {
                 uboot.set_env("bootfile", &request.bootfile).await?;
                 request.bootcmd
             } else {
                 info!("No network boot request available, using loady to upload FIT image...");
                 Self::uboot_loady(&mut uboot, fit_loadaddr as usize, fitimage).await?;
-                self.serial_bootm_command(fit_loadaddr)
+                self.serial_bootm_command(bootm_arg)
             }
         } else {
             info!("No TFTP config, using loady to upload FIT image...");
             Self::uboot_loady(&mut uboot, fit_loadaddr as usize, fitimage).await?;
-            self.serial_bootm_command(fit_loadaddr)
+            self.serial_bootm_command(bootm_arg)
         };
 
         info!("Booting kernel with command: {}", bootcmd);
@@ -1390,14 +1408,20 @@ where
         Ok(())
     }
 
-    fn serial_bootm_command(&self, fit_loadaddr: u64) -> String {
-        if let Some(addr) = self.config.bootm_addr_int() {
-            format!("bootm {addr:#x}")
-        } else if self.config.fit_load_addr_int().is_some() {
-            format!("bootm {fit_loadaddr:#x}")
-        } else {
-            "bootm".to_string()
-        }
+    fn resolved_bootm_arg(&self, fit_loadaddr: u64, runtime: &ResolvedRuntime) -> Option<u64> {
+        self.config
+            .bootm_addr_int()
+            .or(runtime.bootm_addr)
+            .or_else(|| {
+                self.config
+                    .fit_load_addr_int()
+                    .or(runtime.fit_load_addr)
+                    .map(|_| fit_loadaddr)
+            })
+    }
+
+    fn serial_bootm_command(&self, bootm_arg: Option<u64>) -> String {
+        bootm_command(bootm_arg)
     }
 
     async fn uboot_loady(
@@ -1476,6 +1500,7 @@ fn build_network_boot_request(
     net_ok: bool,
     network_transfer_ready: bool,
     fitname: &str,
+    bootm_arg: Option<u64>,
 ) -> Option<NetworkBootRequest> {
     if !network_transfer_ready {
         return None;
@@ -1484,18 +1509,26 @@ fn build_network_boot_request(
     if static_ip {
         return Some(NetworkBootRequest {
             bootfile: fitname.to_string(),
-            bootcmd: format!("tftp {fitname} && bootm"),
+            bootcmd: format!("tftp {fitname} && {}", bootm_command(bootm_arg)),
         });
     }
 
     if net_ok {
         return Some(NetworkBootRequest {
             bootfile: fitname.to_string(),
-            bootcmd: format!("dhcp {fitname} && bootm"),
+            bootcmd: format!("dhcp {fitname} && {}", bootm_command(bootm_arg)),
         });
     }
 
     None
+}
+
+fn bootm_command(bootm_arg: Option<u64>) -> String {
+    if let Some(addr) = bootm_arg {
+        format!("bootm {addr:#x}")
+    } else {
+        "bootm".to_string()
+    }
 }
 
 #[cfg(test)]
@@ -1516,6 +1549,7 @@ mod tests {
             false,
             true,
             "ostool/home/user/workspace/target/image.fit",
+            None,
         )
         .unwrap();
 
@@ -1531,7 +1565,7 @@ mod tests {
 
     #[test]
     fn network_boot_request_uses_tftp_for_static_ip_mode() {
-        let request = build_network_boot_request(true, false, true, "image.fit").unwrap();
+        let request = build_network_boot_request(true, false, true, "image.fit", None).unwrap();
 
         assert_eq!(request.bootcmd, "tftp image.fit && bootm");
         assert_eq!(request.bootfile, "image.fit");
@@ -1539,14 +1573,22 @@ mod tests {
 
     #[test]
     fn network_boot_request_requires_ready_transport() {
-        assert!(build_network_boot_request(true, false, false, "image.fit").is_none());
-        assert!(build_network_boot_request(false, false, true, "image.fit").is_none());
+        assert!(build_network_boot_request(true, false, false, "image.fit", None).is_none());
+        assert!(build_network_boot_request(false, false, true, "image.fit", None).is_none());
         assert_eq!(
-            build_network_boot_request(false, true, true, "image.fit")
+            build_network_boot_request(false, true, true, "image.fit", None)
                 .unwrap()
                 .bootcmd,
             "dhcp image.fit && bootm"
         );
+    }
+
+    #[test]
+    fn network_boot_request_passes_configured_bootm_addr() {
+        let request =
+            build_network_boot_request(true, false, true, "image.fit", Some(0x82200000)).unwrap();
+
+        assert_eq!(request.bootcmd, "tftp image.fit && bootm 0x82200000");
     }
 
     #[test]
@@ -1670,7 +1712,9 @@ timeout = 0
             ..Default::default()
         };
 
-        config.replace_strings(&tool).unwrap();
+        config
+            .replace_strings(&tool.variable_scope().unwrap())
+            .unwrap();
 
         let expected = tmp.path().display().to_string();
         assert_eq!(

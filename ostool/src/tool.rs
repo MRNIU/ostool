@@ -8,15 +8,15 @@ use std::{
 
 use anyhow::{Context, anyhow, bail};
 use cargo_metadata::Metadata;
-use colored::Colorize;
 use jkconfig::data::{
     ElementHook, HookContext, HookFlow, HookOption, MessageLevel, MultiSelectBinding,
     MultiSelectSpec, SingleSelectBinding, SingleSelectSpec,
 };
-use object::Object;
-use tokio::fs;
 
 use crate::{
+    artifact::runtime::{
+        PreparedRuntimeArtifacts, RuntimeArtifactOptions, prepare_runtime_artifacts,
+    },
     build::{
         config::{BuildConfig, BuildSystem, Cargo},
         someboot,
@@ -25,7 +25,6 @@ use crate::{
     invocation::Invocation,
     process::ProcessContext,
     project::{ProjectLayout, metadata, resolve_project_layout, variables::VariableScope},
-    utils::PathResultExt,
 };
 
 /// Static configuration used to initialize a [`Tool`].
@@ -180,11 +179,6 @@ impl Tool {
         }
     }
 
-    /// Creates a new command builder for the given program.
-    pub(crate) fn command(&self, program: &str) -> anyhow::Result<crate::utils::Command> {
-        Ok(crate::process::command(program, &self.process_context()?))
-    }
-
     /// Gets the Cargo metadata for the current manifest.
     pub fn metadata(&self) -> anyhow::Result<Metadata> {
         metadata::cargo_metadata(&self.project_layout())
@@ -194,30 +188,6 @@ impl Tool {
         metadata::package_manifest_dir(&self.project_layout(), package)
     }
 
-    /// Sets the ELF artifact path and synchronizes derived runtime metadata.
-    pub(crate) async fn set_elf_artifact_path(&mut self, path: PathBuf) -> anyhow::Result<()> {
-        let path = path
-            .canonicalize()
-            .with_path("failed to canonicalize file", &path)?;
-        let artifact_dir = path
-            .parent()
-            .ok_or_else(|| anyhow!("invalid ELF file path: {}", path.display()))?
-            .to_path_buf();
-
-        self.ctx.artifacts.elf = Some(path.clone());
-        self.ctx.artifacts.bin = None;
-        self.ctx.artifacts.cargo_artifact_dir = Some(artifact_dir.clone());
-        self.ctx.artifacts.runtime_artifact_dir = Some(artifact_dir);
-
-        let binary_data = fs::read(&path)
-            .await
-            .with_path("failed to read ELF file", &path)?;
-        let file = object::File::parse(binary_data.as_slice())
-            .with_context(|| format!("failed to parse ELF file: {}", path.display()))?;
-        self.ctx.arch = Some(file.architecture());
-        Ok(())
-    }
-
     /// Imports an ELF artifact, strips it to a runtime `.elf`, and optionally
     /// materializes a `.bin` image.
     pub async fn prepare_elf_artifact(
@@ -225,66 +195,21 @@ impl Tool {
         path: PathBuf,
         to_bin: bool,
     ) -> anyhow::Result<()> {
-        self.set_elf_artifact_path(path).await?;
-        self.objcopy_elf()?;
-        if to_bin {
-            self.objcopy_output_bin()?;
-        }
+        let process_context = self.process_context()?;
+        let prepared = prepare_runtime_artifacts(
+            &process_context,
+            RuntimeArtifactOptions {
+                elf_path: path,
+                to_bin,
+                bin_dir: self.bin_dir(),
+                debug: self.debug_enabled(),
+                cargo_artifact_dir: None,
+                strip_elf: true,
+                objcopy_program: PathBuf::from("rust-objcopy"),
+            },
+        )?;
+        self.apply_prepared_runtime_artifacts(prepared);
         Ok(())
-    }
-
-    /// Strips debug symbols from the ELF file.
-    pub(crate) fn objcopy_elf(&mut self) -> anyhow::Result<PathBuf> {
-        let elf_path = self
-            .ctx
-            .artifacts
-            .elf
-            .as_ref()
-            .ok_or_else(|| anyhow!("elf not exist"))?;
-        let elf_path = elf_path
-            .canonicalize()
-            .with_path("failed to canonicalize file", elf_path)?;
-
-        let stripped_elf_path = elf_path.with_file_name(
-            elf_path
-                .file_stem()
-                .ok_or_else(|| anyhow!("invalid ELF file path: {}", elf_path.display()))?
-                .to_string_lossy()
-                .to_string()
-                + ".elf",
-        );
-        println!(
-            "{}",
-            format!(
-                "Stripping ELF file...\r\n  original elf: {}\r\n  stripped elf: {}",
-                elf_path.display(),
-                stripped_elf_path.display()
-            )
-            .bold()
-            .purple()
-        );
-
-        let mut objcopy = self.command("rust-objcopy")?;
-        objcopy.arg(format!(
-            "--binary-architecture={}",
-            format!(
-                "{:?}",
-                self.ctx
-                    .arch
-                    .ok_or_else(|| anyhow!("architecture not detected"))?
-            )
-            .to_lowercase()
-        ));
-        objcopy.arg(&elf_path);
-        objcopy.arg(&stripped_elf_path);
-        objcopy.run()?;
-
-        self.ctx.artifacts.elf = Some(stripped_elf_path.clone());
-        self.ctx.artifacts.bin = None;
-        self.ctx.artifacts.cargo_artifact_dir = stripped_elf_path.parent().map(PathBuf::from);
-        self.ctx.artifacts.runtime_artifact_dir = stripped_elf_path.parent().map(PathBuf::from);
-
-        Ok(stripped_elf_path)
     }
 
     /// Converts the ELF file to raw binary format.
@@ -300,54 +225,34 @@ impl Tool {
             .elf
             .as_ref()
             .ok_or_else(|| anyhow!("elf not exist"))?;
-        let elf_path = elf_path
-            .canonicalize()
-            .with_path("failed to canonicalize file", elf_path)?;
-
-        let bin_name = elf_path
-            .file_stem()
-            .ok_or_else(|| anyhow!("invalid ELF file path: {}", elf_path.display()))?
-            .to_string_lossy()
-            .to_string()
-            + ".bin";
-
-        let bin_path = if let Some(bin_dir) = self.bin_dir() {
-            bin_dir.join(bin_name)
-        } else {
-            elf_path.with_file_name(bin_name)
-        };
-
-        if let Some(parent) = bin_path.parent() {
-            std::fs::create_dir_all(parent).with_path("failed to create directory", parent)?;
-        }
-
-        println!(
-            "{}",
-            format!(
-                "Converting ELF to BIN format...\r\n  elf: {}\r\n  bin: {}",
-                elf_path.display(),
-                bin_path.display()
-            )
-            .bold()
-            .purple()
-        );
-
-        let mut objcopy = self.command("rust-objcopy")?;
-
-        if !self.debug_enabled() {
-            objcopy.arg("--strip-all");
-        }
-
-        objcopy
-            .arg("-O")
-            .arg("binary")
-            .arg(&elf_path)
-            .arg(&bin_path);
-        objcopy.run()?;
-
-        self.ctx.artifacts.bin = Some(bin_path.clone());
-        self.ctx.artifacts.runtime_artifact_dir = bin_path.parent().map(PathBuf::from);
+        let process_context = self.process_context()?;
+        let prepared = prepare_runtime_artifacts(
+            &process_context,
+            RuntimeArtifactOptions {
+                elf_path: elf_path.to_path_buf(),
+                to_bin: true,
+                bin_dir: self.bin_dir(),
+                debug: self.debug_enabled(),
+                cargo_artifact_dir: self.ctx.artifacts.cargo_artifact_dir.clone(),
+                strip_elf: false,
+                objcopy_program: PathBuf::from("rust-objcopy"),
+            },
+        )?;
+        let bin_path = prepared
+            .bin()
+            .ok_or_else(|| anyhow!("bin not exist after objcopy"))?
+            .to_path_buf();
+        self.apply_prepared_runtime_artifacts(prepared);
         Ok(bin_path)
+    }
+
+    pub(crate) fn apply_prepared_runtime_artifacts(&mut self, prepared: PreparedRuntimeArtifacts) {
+        self.ctx.artifacts.elf = Some(prepared.elf().to_path_buf());
+        self.ctx.artifacts.bin = prepared.bin().map(PathBuf::from);
+        self.ctx.artifacts.cargo_artifact_dir = prepared.cargo_artifact_dir().map(PathBuf::from);
+        self.ctx.artifacts.runtime_artifact_dir =
+            prepared.runtime_artifact_dir().map(PathBuf::from);
+        self.ctx.arch = prepared.arch();
     }
 
     pub(crate) fn resolve_build_config_path(&self, explicit_path: Option<PathBuf>) -> PathBuf {
@@ -829,6 +734,7 @@ mod tests {
         Tool, ToolConfig, build_target_options, collect_package_doc_targets, parse_rustup_targets,
         resolve_manifest_context,
     };
+    use crate::artifact::runtime::{RuntimeArtifactOptions, prepare_runtime_artifacts};
     use crate::build::config::{BuildConfig, BuildSystem, Cargo};
     use crate::run::qemu::resolve_qemu_config_path_in_dir;
     use crate::{process, project::variables};
@@ -841,7 +747,7 @@ mod tests {
     };
 
     #[tokio::test]
-    async fn set_elf_artifact_path_updates_dirs_and_arch() {
+    async fn apply_prepared_runtime_artifacts_updates_dirs_and_arch() {
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(
             temp.path().join("Cargo.toml"),
@@ -860,7 +766,21 @@ mod tests {
             ..Default::default()
         })
         .unwrap();
-        tool.set_elf_artifact_path(copied.clone()).await.unwrap();
+        let process_context = tool.process_context().unwrap();
+        let prepared = prepare_runtime_artifacts(
+            &process_context,
+            RuntimeArtifactOptions {
+                elf_path: copied.clone(),
+                to_bin: false,
+                bin_dir: None,
+                debug: false,
+                cargo_artifact_dir: None,
+                strip_elf: false,
+                objcopy_program: PathBuf::from("rust-objcopy"),
+            },
+        )
+        .unwrap();
+        tool.apply_prepared_runtime_artifacts(prepared);
 
         let expected_elf = copied.canonicalize().unwrap();
         let expected_dir = expected_elf.parent().unwrap().to_path_buf();
@@ -1250,7 +1170,8 @@ to_bin = false
         })
         .unwrap();
 
-        let mut cmd = tool.command("echo").unwrap();
+        let process_context = tool.process_context().unwrap();
+        let mut cmd = process::command("echo", &process_context);
         cmd.arg("${workspace}");
         cmd.env("PKG_DIR", "${package}");
 
@@ -1295,7 +1216,21 @@ to_bin = false
             ..Default::default()
         })
         .unwrap();
-        tool.set_elf_artifact_path(copied.clone()).await.unwrap();
+        let process_context = tool.process_context().unwrap();
+        let prepared = prepare_runtime_artifacts(
+            &process_context,
+            RuntimeArtifactOptions {
+                elf_path: copied.clone(),
+                to_bin: false,
+                bin_dir: None,
+                debug: false,
+                cargo_artifact_dir: None,
+                strip_elf: false,
+                objcopy_program: PathBuf::from("rust-objcopy"),
+            },
+        )
+        .unwrap();
+        tool.apply_prepared_runtime_artifacts(prepared);
 
         let output = temp.path().join("kernel-env.txt");
         let process_context = tool.process_context().unwrap();

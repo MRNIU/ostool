@@ -21,13 +21,16 @@ R1d 已继续完成 build outcome seam，但仍保持 CLI、配置格式和运�
 - `cargo_builder.rs` 已拆为 `cargo_pipeline.rs` / `artifact_selector.rs`：
   `CargoBuildPipeline::execute()` 返回 `CargoBuildOutcome`，artifact selection 独立测试，
   legacy orchestration 层继续把 resolved artifact 写回 `Tool` runtime state。
+- 新增 `artifact/runtime.rs`，runtime `.elf` / `.bin` 准备已从 legacy `Tool` 方法体抽为
+  `prepare_runtime_artifacts()`，由兼容 `Tool` 门面把 `PreparedRuntimeArtifacts` 写回旧
+  `ctx::OutputArtifacts`。
 - 上游 #106 的 `disable_someboot_build_config` 语义保留。
 
 仍未完成的 R1 目标：
 
 - `Tool`、`ToolConfig`、`ManifestContext`、`ctx::OutputArtifacts` 仍是兼容 API，不能写成已移除。
-- `InvocationState`、`ActiveBuildContext`、runtime artifact preparer 尚未作为生产主路径接线；其中
-  `InvocationState` / `ActiveBuildContext` 已不属于 #108 当前实现的一部分，后续如需恢复必须先说明真实消费者。
+- `InvocationState`、`ActiveBuildContext` 尚未作为生产主路径接线；这两个类型已不属于 #108/R1e
+  当前实现的一部分，后续如需恢复必须先说明真实消费者。
 - QEMU、U-Boot、board 仍有跨模块 `impl Tool`，runner/board entrypoint 尚未完全改成显式输入。
 - artifact lifecycle、someboot 注入责任收敛、debug artifact pipeline 仍属于 R2 及后续工作。
 
@@ -510,7 +513,7 @@ R1 按 R1a-R1i 保守切片执行。切片编号是执行顺序，不改变最�
 | R1b project/invocation/process seed | 已完成（#108 范围） | `ProjectLayout`、metadata helper、`InvocationOptions` / `Invocation`、`VariableScope`、`ProcessContext` 已落地；CLI 与 `cargo-osrun` 已先创建 `Invocation`，再创建兼容 `Tool` 门面。`InvocationState` / `ActiveBuildContext` 没有进入当前实现，后续不应在没有消费者时补回。 |
 | R1c variable/process functions | 已完成（#108 范围） | 变量替换、path expansion、command 构造和 shell hook 已从 `Tool` 逻辑抽到 project/process helper；build、QEMU、U-Boot、board config 等调用点已通过兼容 `Tool` 取得 `VariableScope` / `ProcessContext`。 |
 | R1d resolved Cargo artifact seam | 已完成（#108 后续本地完成） | `artifact_selector.rs` 已承载 Cargo JSON executable selection 并覆盖 explicit bin、package-name binary、`default-run`、single binary 和 ambiguity error；`CargoBuildPipeline::execute()` 返回 `CargoBuildOutcome`，legacy orchestration 层继续把 resolved artifact 写回 `Tool` runtime state。 |
-| R1e runtime artifact preparer | 未完成 | runtime `.elf` / `.bin` 准备仍在 legacy `Tool` / build flow 中，尚未独立为 artifact preparer。 |
+| R1e runtime artifact preparer | 已完成（upstream-friendly 形态） | 新增 `artifact/runtime.rs` 和 `PreparedRuntimeArtifacts`；ELF canonicalization、arch detection、stripped `.elf`、optional `.bin` 生成已移到 `prepare_runtime_artifacts()`。Cargo resolved artifact 和 custom ELF path 都通过该 helper 准备 runtime artifact，再由 legacy `Tool` 兼容门面写回 `ctx::OutputArtifacts`。未移动 public `ctx::OutputArtifacts`，也未引入无消费者的 `InvocationState`。 |
 | R1f build config loader/menu hooks | 未完成 | build config loading、menu hooks 和 orchestration 仍未迁出 legacy `Tool` 主路径。 |
 | R1g runner/board entrypoints | 未完成 | QEMU、U-Boot、board 仍保留跨模块 `impl Tool`。 |
 | R1h remove `Tool` / `ctx` | 未开始 | 上游友好模式下暂不默认执行；除非另起 fork-side reset 或上游明确接受 API break。 |
@@ -685,33 +688,38 @@ R1d 后续约束：
 **文件：**
 
 - Create: `ostool/src/artifact/mod.rs`
-- Create: `ostool/src/artifact/state.rs`
 - Create: `ostool/src/artifact/runtime.rs`
-- Modify: `ostool/src/invocation.rs`
-- Modify: `ostool/src/main.rs`
-- Modify: `ostool/src/bin/cargo-osrun.rs`
-- Modify: `ostool/src/run/qemu.rs`
-- Modify: `ostool/src/run/uboot.rs`
-- Modify: `ostool/src/board/mod.rs`
+- Modify: `ostool/src/lib.rs`
+- Modify: `ostool/src/tool.rs`
+- Modify: `ostool/src/build/cargo_pipeline.rs`
 
 步骤：
 
-- [ ] 把 `OutputArtifacts` 移到 `artifact/state.rs`。
-- [ ] 定义 `PreparedRuntimeArtifacts`，保存 R1 仍需的旧字段语义。
-- [ ] 把 ELF canonicalization 和 arch detection 移到 runtime artifact helper。
-- [ ] 把 stripped `.elf` 和 optional `.bin` 生成移到 runtime artifact helper。
-- [ ] 只有 helper 需要持有 options、process context 或 cache 时，才保留 `RuntimeArtifactPreparer` struct；否则使用 module function。
-- [ ] 支持从 `CargoBuildOutcome` 准备 runtime artifact。
-- [ ] 支持从 custom ELF path 准备 runtime artifact。
-- [ ] 替换 `Tool::prepare_elf_artifact`、`Tool::set_elf_artifact_path`、`Tool::objcopy_elf`、`Tool::objcopy_output_bin` call sites。
-- [ ] 保持当前 artifact 字段和更新行为：
+- [x] 定义 `PreparedRuntimeArtifacts`，保存 R1 仍需的旧字段语义。
+- [x] 把 ELF canonicalization 和 arch detection 移到 runtime artifact helper。
+- [x] 把 stripped `.elf` 和 optional `.bin` 生成移到 runtime artifact helper。
+- [x] 只有 helper 需要持有 options、process context 或 cache 时，才保留 `RuntimeArtifactPreparer` struct；否则使用 module function。
+- [x] 支持从 `CargoBuildOutcome` / resolved Cargo artifact 准备 runtime artifact。
+- [x] 支持从 custom ELF path 准备 runtime artifact。
+- [x] 替换 `Tool::prepare_elf_artifact`、`Tool::set_elf_artifact_path`、`Tool::objcopy_elf`、`Tool::objcopy_output_bin` call sites；其中
+  `Tool::prepare_elf_artifact` / `Tool::objcopy_output_bin` 保留为兼容 wrapper，
+  `Tool::set_elf_artifact_path` / `Tool::objcopy_elf` 已删除。
+- [x] 保持当前 artifact 字段和更新行为：
   - `elf`
   - `bin`
   - `cargo_artifact_dir`
   - `runtime_artifact_dir`
-- [ ] orchestration 层把 `PreparedRuntimeArtifacts` 写入 `InvocationState`。
-- [ ] Run artifact unit tests。
-- [ ] Run `cargo check -p ostool`。
+- [x] Run artifact unit tests。
+- [x] Run `cargo test -p ostool -- --nocapture`。
+
+2026-05-23 实现校准：
+
+- Upstream-friendly mode 下暂不把 public `ctx::OutputArtifacts` 移到 `artifact/state.rs`，避免扩大
+  Rust library API break。
+- 当前代码没有真实 `InvocationState` 消费者，因此本切片不新增或接线 `InvocationState`；legacy
+  `Tool::apply_prepared_runtime_artifacts()` 是兼容桥。
+- `RuntimeArtifactPreparer` struct 没有必要状态，实际落地为 `prepare_runtime_artifacts()` module
+  function。
 
 审查重点：
 

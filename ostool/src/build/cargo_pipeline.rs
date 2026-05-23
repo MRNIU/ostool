@@ -17,6 +17,7 @@ use colored::Colorize;
 
 use crate::{
     Tool,
+    artifact::runtime::{RuntimeArtifactOptions, prepare_runtime_artifacts},
     build::{
         artifact_selector::{
             CargoExecutableArtifact, ResolvedCargoArtifact, select_executable_artifact,
@@ -309,17 +310,20 @@ impl<'a> CargoBuildPipeline<'a> {
 
     /// Applies the resolved Cargo artifact to the legacy tool runtime state.
     async fn handle_output(&mut self, resolved: &ResolvedCargoArtifact) -> anyhow::Result<()> {
-        self.tool
-            .set_elf_artifact_path(resolved.elf_path().to_path_buf())
-            .await?;
-        self.tool.ctx.artifacts.cargo_artifact_dir =
-            Some(resolved.cargo_artifact_dir().to_path_buf());
-        self.tool.ctx.artifacts.runtime_artifact_dir =
-            Some(resolved.cargo_artifact_dir().to_path_buf());
-
-        if self.config.to_bin && !self.skip_objcopy {
-            self.tool.objcopy_output_bin()?;
-        }
+        let process_context = self.tool.process_context()?;
+        let prepared = prepare_runtime_artifacts(
+            &process_context,
+            RuntimeArtifactOptions {
+                elf_path: resolved.elf_path().to_path_buf(),
+                to_bin: self.config.to_bin && !self.skip_objcopy,
+                bin_dir: self.tool.bin_dir(),
+                debug: self.tool.debug_enabled(),
+                cargo_artifact_dir: Some(resolved.cargo_artifact_dir().to_path_buf()),
+                strip_elf: false,
+                objcopy_program: PathBuf::from("rust-objcopy"),
+            },
+        )?;
+        self.tool.apply_prepared_runtime_artifacts(prepared);
 
         Ok(())
     }

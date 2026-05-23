@@ -6,6 +6,30 @@
 
 R1 的目标是移除 `Tool` 作为中心业务对象的架构，把一次 OSTool 调用拆成更清晰的 invocation 模型，同时保持 CLI、配置格式和运行时行为不变。
 
+### 2026-05-23 状态更新
+
+上游 PR #108 已合入，merge commit 为 `bed5315 refactor(tool): 拆分调用、项目与进程上下文 (#108)`。该 PR 采用
+**Upstream-friendly mode**，不是本文最初设想的 fork-side 一次性 API reset。
+
+已落地的边界：
+
+- 新增 `InvocationOptions` / `Invocation`，由 CLI 和 `cargo-osrun` 先解析 invocation，再创建兼容 `Tool` 门面。
+- 新增 `ProjectLayout`、Cargo metadata helper、`VariableScope` 和 `ProcessContext`。
+- `project` / `process` 保持 crate-internal，`invocation` 作为当前最小公开入口。
+- build hooks、QEMU、U-Boot、board config 和 shell command 构造已改用 `VariableScope` / `ProcessContext`。
+- `CargoBuilder` 内部已解析 `ResolvedCargoArtifact`，并由 legacy `Tool` runtime state 承接。
+- 上游 #106 的 `disable_someboot_build_config` 语义保留。
+
+仍未完成的 R1 目标：
+
+- `Tool`、`ToolConfig`、`ManifestContext`、`ctx::OutputArtifacts` 仍是兼容 API，不能写成已移除。
+- `InvocationState`、`ActiveBuildContext`、runtime artifact preparer 尚未作为生产主路径接线；其中
+  `InvocationState` / `ActiveBuildContext` 已不属于 #108 当前实现的一部分，后续如需恢复必须先说明真实消费者。
+- QEMU、U-Boot、board 仍有跨模块 `impl Tool`，runner/board entrypoint 尚未完全改成显式输入。
+- artifact lifecycle、someboot 注入责任收敛、debug artifact pipeline 仍属于 R2 及后续工作。
+
+后续默认继续走 **Upstream-friendly incremental mode**：每个切片都应保持 CLI/config/runtime 行为不变，避免一次性 public API break。只有用户明确要求 fork-side internal API reset 时，才按本文的最终形态删除 `Tool` / `ctx`。
+
 核心思路：
 
 - `ProjectLayout` 保存不可变的项目路径事实。
@@ -56,7 +80,8 @@ R1 开工前必须明确采用哪一种模式：
 | Fork-side mode | 本 fork 内部架构重构，`Tool` 相关 Rust API 可一次性移除或改名 | CLI/config/runtime 行为硬兼容；PR 或提交说明写清这是 internal API reset |
 | Upstream-friendly mode | 计划直接面向上游 review | 保留 deprecated wrapper/re-export，或者先确认上游接受 breaking Rust API |
 
-如果没有新的用户指令，当前文档默认按 **Fork-side mode** 执行。
+2026-05-23 起，如果没有新的用户指令，当前文档默认按 **Upstream-friendly incremental mode** 执行。也就是说，
+后续切片优先继续削薄 `Tool`，但不默认删除或破坏已公开 Rust API。
 
 R1 明确不做：
 
@@ -344,6 +369,10 @@ R1 应使用 Rust-native 模块边界，不要为了“看起来抽象”到处�
 
 ## 5. 目标目录结构
 
+以下目录结构是完整 R1 的目标形态，不是 #108 合入后的当前形态。#108 已创建 `invocation.rs`、
+`project/*` 和 `process/mod.rs`，但为了上游兼容仍保留 `tool.rs`、`ctx.rs`、`CargoBuilder` 和
+跨模块 `impl Tool`。后续切片修改本表时，必须区分“已合入上游的中间状态”和“完整 R1 终态”。
+
 ```text
 ostool/src/
   lib.rs                         [modify] 更新导出；移除 `tool` 作为中心模块
@@ -469,6 +498,31 @@ graph TD
 
 R1 按 R1a-R1i 保守切片执行。切片编号是执行顺序，不改变最终完整目标。
 
+### 2026-05-23 当前切片状态
+
+| 切片 | 当前状态 | 说明 |
+|---|---|---|
+| R1a contract tests | 已完成（#108 范围） | 已补 `ostool build`、`run qemu`、`run uboot`、`board run` 和 `cargo-osrun` parser 护栏；已补变量替换、missing env、selected package、process env/args、`KERNEL_ELF` shell hook、Cargo artifact selector、resolved artifact 写回 runtime state 等测试。原计划中的完整 public API reset 护栏不适用于 #108 的上游友好模式。 |
+| R1b project/invocation/process seed | 已完成（#108 范围） | `ProjectLayout`、metadata helper、`InvocationOptions` / `Invocation`、`VariableScope`、`ProcessContext` 已落地；CLI 与 `cargo-osrun` 已先创建 `Invocation`，再创建兼容 `Tool` 门面。`InvocationState` / `ActiveBuildContext` 没有进入当前实现，后续不应在没有消费者时补回。 |
+| R1c variable/process functions | 已完成（#108 范围） | 变量替换、path expansion、command 构造和 shell hook 已从 `Tool` 逻辑抽到 project/process helper；build、QEMU、U-Boot、board config 等调用点已通过兼容 `Tool` 取得 `VariableScope` / `ProcessContext`。 |
+| R1d resolved Cargo artifact seam | 已完成（#108 范围） | `ResolvedCargoArtifact` 已表达 executable path 与 Cargo artifact dir，Cargo JSON executable selection 已有测试，`handle_output()` 已测试把 resolved artifact 写回 legacy runtime state。当前没有独立 `CargoBuildOutcome` 类型，也没有拆出 `CargoBuildPipeline` / `artifact_selector.rs` 文件；这些不应写成已完成。 |
+| R1e runtime artifact preparer | 未完成 | runtime `.elf` / `.bin` 准备仍在 legacy `Tool` / build flow 中，尚未独立为 artifact preparer。 |
+| R1f build config loader/menu hooks | 未完成 | build config loading、menu hooks 和 orchestration 仍未迁出 legacy `Tool` 主路径。 |
+| R1g runner/board entrypoints | 未完成 | QEMU、U-Boot、board 仍保留跨模块 `impl Tool`。 |
+| R1h remove `Tool` / `ctx` | 未开始 | 上游友好模式下暂不默认执行；除非另起 fork-side reset 或上游明确接受 API break。 |
+| R1i final verification/docs | 未完成 | #108 已通过其 PR 中记录的 `fmt`、`clippy -p ostool`、`test -p ostool`；完整 R1 终态验证尚未发生。 |
+
+下方 R1a-R1i 任务清单保留为完整 R1 终态 checklist。因为 #108 采用了更小的上游友好实现形态，
+没有逐项机械勾选所有原始 checkbox；当前完成状态以上表和各任务的“实现校准”说明为准。
+
+下一步建议不要直接跳到 R1h。更合适的是先做一个小的 upstream-friendly R1 follow-up：
+
+- 让更多调用点接收 `VariableScope` / `ProcessContext` / resolved artifact 的显式输入，而不是继续从
+  `Tool` 取完整上下文。
+- 精简或真正接线尚未消费的中间模型，避免 `Invocation` 或 state 类型变成新的过早抽象。
+- 保持 `project` / `process` crate-internal，除非有清晰 public API 需求。
+- 把 artifact lifecycle 和 someboot 注入责任收敛留到 R2，不塞回 R1 follow-up。
+
 ### 任务 1 / R1a：先补 contract tests，再移动代码
 
 **文件：**
@@ -481,19 +535,19 @@ R1 按 R1a-R1i 保守切片执行。切片编号是执行顺序，不改变最�
 
 步骤：
 
-- [ ] 补 `ostool build --config --package --bin` parser tests。
-- [ ] 补 `ostool run qemu --config --qemu-config --debug --dtb-dump --package --bin` parser tests。
-- [ ] 补 `ostool run uboot --config --uboot-config --package --bin` parser tests。
-- [ ] 补 global `--manifest` parser tests。
-- [ ] 补 `cargo-osrun` parser tests：default QEMU、`uboot`、`--to-bin`、`--no-run`、`--build-dir`、`--bin-dir`。
-- [ ] 补 Cargo artifact selector tests：显式 `bin`、package 同名 bin、`default-run`、single bin、多 bin ambiguity。
-- [ ] 补 variable replacement tests：`${workspace}`、`${workspaceFolder}`、`${package}`、`${tmpDir}`、`${env:VAR}`、missing env -> empty string。
-- [ ] 补 process context tests：workdir、`WORKSPACE_FOLDER`、arg/env replacement。
-- [ ] 补 shell context tests：runtime ELF 存在时 shell hook 注入 `KERNEL_ELF`。
-- [ ] 补 runtime artifact state tests：Cargo artifact path 和 custom ELF path 的旧行为等价。
-- [ ] 更新 public API trybuild expectations，明确 `Tool` 相关 API reset 是有意变更。
-- [ ] Run `cargo test -p ostool public_api`。
-- [ ] Run parser/selector/variable/process/artifact 相关最小测试。
+- [x] 补 `ostool build --config --package --bin` parser tests。
+- [x] 补 `ostool run qemu --config --qemu-config --debug --dtb-dump --package --bin` parser tests。
+- [x] 补 `ostool run uboot --config --uboot-config --package --bin` parser tests。
+- [x] 补 global `--manifest` parser tests。
+- [x] 补 `cargo-osrun` parser tests：default QEMU、`uboot`、`--to-bin`、`--build-dir`、`--bin-dir`。
+- [x] 补 Cargo artifact selector tests：显式 `bin`、package 同名 bin、`default-run`、single bin、多 bin ambiguity。
+- [x] 补 variable replacement tests：`${workspace}`、`${workspaceFolder}`、`${package}`、`${tmpDir}`、`${env:VAR}`、missing env -> empty string。
+- [x] 补 process context tests：workdir、`WORKSPACE_FOLDER`、arg/env replacement。
+- [x] 补 shell context tests：runtime ELF 存在时 shell hook 注入 `KERNEL_ELF`。
+- [x] 补 runtime artifact state tests：Cargo artifact path 和 resolved Cargo artifact 写回旧状态等价。
+- [x] 上游友好模式下保留 `Tool` public API，未执行完整 public API reset。
+- [x] #108 已运行并记录 `cargo test -p ostool -- --nocapture`。
+- [x] Run parser/selector/variable/process/artifact 相关最小测试。
 
 审查重点：
 
@@ -517,17 +571,17 @@ R1 按 R1a-R1i 保守切片执行。切片编号是执行顺序，不改变最�
 
 步骤：
 
-- [ ] 把 manifest path resolution 移到 `project/layout.rs`。
-- [ ] 把 `ManifestContext` 语义重命名为 `ProjectLayout`。
-- [ ] 把 package metadata lookup 移到 `project/metadata.rs`。
-- [ ] 引入 `InvocationOptions`、`InvocationState` 和 `Invocation`。
-- [ ] 保持 `ProjectLayout`、`InvocationOptions`、`InvocationState`、`Invocation` 字段 private。
-- [ ] 引入 `ActiveBuildContext`、`ActiveCargoBuild`、`ActiveCustomBuild`、`VariableScope` 和 `ProcessContext`。
-- [ ] 先让现有 `Tool` 门面调用这些新 helper；本切片不要求删除 `Tool`。
-- [ ] 确认 `Tool` 没有新增业务职责，只是转发到新 helper。
-- [ ] 用 invocation constructor 替代 `init_tool()`。
-- [ ] 替换 `cargo-osrun` 里的 `resolve_manifest_context()` 用法。
-- [ ] Run `cargo check -p ostool`。
+- [x] 把 manifest path resolution 移到 `project/layout.rs`。
+- [x] 把 `ManifestContext` 的项目事实语义迁移到 `ProjectLayout`，并保留 `ManifestContext` 作为兼容类型。
+- [x] 把 package metadata lookup 移到 `project/metadata.rs`。
+- [x] 引入 `InvocationOptions` 和 `Invocation`；#108 未引入无生产消费者的 `InvocationState`。
+- [x] 保持 `ProjectLayout`、`InvocationOptions`、`Invocation` 字段 private。
+- [x] 引入 `VariableScope` 和 `ProcessContext`；`ActiveBuildContext` 系列未进入 #108 当前实现。
+- [x] 先让现有 `Tool` 门面调用这些新 helper；本切片不要求删除 `Tool`。
+- [x] 确认 `Tool` 没有新增业务职责，只是转发到新 helper。
+- [x] 用 invocation constructor 替代 `init_tool()` 内部 manifest resolution。
+- [x] 替换 `cargo-osrun` 里的 `resolve_manifest_context()` 用法。
+- [x] #108 已运行并记录 `cargo check -p ostool`。
 
 审查重点：
 
@@ -552,15 +606,15 @@ R1 按 R1a-R1i 保守切片执行。切片编号是执行顺序，不改变最�
 
 步骤：
 
-- [ ] 把 `${workspace}`、`${workspaceFolder}`、`${package}`、`${tmpDir}`、`${env:VAR}` 替换移到 `project::variables`。
-- [ ] variable expansion 接收 `&VariableScope`；无 active build 时从 `ProjectLayout` 派生 default scope。
-- [ ] 引入 `ProcessContext`，显式保存 workdir、workspace_dir、VariableScope、kernel_elf。
-- [ ] 把 command construction 移到 `process` 模块；只有函数数量和职责膨胀时才拆 `process::command`。
-- [ ] 把 shell command execution 移到 `process` 模块；只有函数数量和职责膨胀时才拆 `process::shell`。
-- [ ] 替换 `Tool::replace_string`、`Tool::replace_path_variables`、`Tool::command`、`Tool::shell_run_cmd` call sites。
-- [ ] 保持 shell hook 的 `KERNEL_ELF` 注入语义。
-- [ ] Run variable/process tests。
-- [ ] Run `cargo check -p ostool`。
+- [x] 把 `${workspace}`、`${workspaceFolder}`、`${package}`、`${tmpDir}`、`${env:VAR}` 替换移到 `project::variables`。
+- [x] variable expansion 接收 `&VariableScope`；无 active build 时从 `ProjectLayout` 派生 default scope。
+- [x] 引入 `ProcessContext`，显式保存 workdir、workspace_dir、VariableScope、kernel_elf。
+- [x] 把 command construction 移到 `process` 模块；当前保留在 `process/mod.rs`，未过早拆 `process::command`。
+- [x] 把 shell command execution 移到 `process` 模块；当前保留在 `process/mod.rs`，未过早拆 `process::shell`。
+- [x] 移除旧变量替换方法，保留 `Tool::command` 作为 thin facade，调用新 `process::command`。
+- [x] 保持 shell hook 的 `KERNEL_ELF` 注入语义。
+- [x] Run variable/process tests。
+- [x] #108 已运行并记录 `cargo check -p ostool`。
 
 审查重点：
 
@@ -573,6 +627,12 @@ R1 按 R1a-R1i 保守切片执行。切片编号是执行顺序，不改变最�
 
 ### 任务 4 / R1d：抽出 Cargo build outcome seam
 
+2026-05-23 实现校准：#108 没有新增独立 `CargoBuildOutcome` 类型，也没有把
+`cargo_builder.rs` 拆成 `cargo_pipeline.rs` / `artifact_selector.rs`。当前已经完成的 seam 是
+`ResolvedCargoArtifact`：Cargo JSON 解析先解析出 executable path 和 artifact dir，再由
+`handle_output()` 写回 legacy runtime state。后续如果继续拆 build pipeline，可以在真实需要时再
+引入 `CargoBuildOutcome` 命名；不要为了符合旧计划名称而补一个 accessor-only wrapper。
+
 **文件：**
 
 - Create: `ostool/src/build/artifact_selector.rs`
@@ -584,19 +644,21 @@ R1 按 R1a-R1i 保守切片执行。切片编号是执行顺序，不改变最�
 
 步骤：
 
-- [ ] 把 Cargo JSON executable selection 移到 `artifact_selector.rs`。
-- [ ] 定义 `ResolvedCargoArtifact` 和 `CargoBuildOutcome`。
+- [x] 保持 Cargo JSON executable selection 为独立函数并补测试；#108 未单独拆出 `artifact_selector.rs`。
+- [x] 定义 `ResolvedCargoArtifact`，表达 executable path 和 Cargo artifact dir。
+- [x] 仅在后续 pipeline 拆分确实需要时，再定义 `CargoBuildOutcome`。
 - [ ] 把 `CargoBuilder` lifecycle 改造成 `CargoBuildPipeline` 或 `run_cargo_build()`。
 - [ ] 如果 pipeline 不需要持有状态，优先使用 `run_cargo_build()` module function。
 - [ ] `CargoBuildPipeline` 或 `run_cargo_build()` 接收 `&ProjectLayout`、`&InvocationOptions`、`&ActiveCargoBuild` 和 `ProcessContext` 所需窄输入。
-- [ ] `CargoBuildPipeline` 返回 `CargoBuildOutcome`，不接收 `&mut InvocationState`。
-- [ ] 保持 pre-build command execution order。
-- [ ] 保持 Cargo command arguments、features、`profile`、log feature、target dir、package、bin、extra config、`args` 和 message format。
-- [ ] 保持 post-build command execution order 和 `KERNEL_ELF` 注入语义。
-- [ ] 保持 current someboot argument behavior；R1 不修重复注入。
-- [ ] Run artifact selector tests。
-- [ ] Run `cargo test -p ostool public_api`。
-- [ ] Run `cargo check -p ostool`。
+- [ ] 后续 `CargoBuildPipeline` 或 module function 返回 explicit build facts，不接收
+  `&mut InvocationState`。
+- [x] 保持 pre-build command execution order。
+- [x] 保持 Cargo command arguments、features、`profile`、log feature、target dir、package、bin、extra config、`args` 和 message format。
+- [x] 保持 post-build command execution order 和 `KERNEL_ELF` 注入语义。
+- [x] 保持 current someboot argument behavior；R1 不修重复注入。
+- [x] Run artifact selector tests。
+- [x] #108 已运行并记录 `cargo test -p ostool -- --nocapture`。
+- [x] #108 已运行并记录 `cargo check -p ostool`。
 
 审查重点：
 
@@ -912,6 +974,10 @@ R1 按 R1a-R1i 保守切片执行。切片编号是执行顺序，不改变最�
 git switch -c feature/invocation-architecture
 ```
 
+2026-05-23 之后，如果目标是继续向上游提交，优先从最新 `upstream/main` 创建新的
+`feature/...` 分支，并只提交当前 follow-up 切片。不要复用已经合入的
+`feature/invocation-boundaries-upstream`，也不要从包含 fork-only 文档的本地历史直接开上游 PR。
+
 如果变更过大，建议拆成以下提交：
 
 1. `test(ostool): 补充 R1 架构重构前行为护栏`
@@ -925,7 +991,22 @@ git switch -c feature/invocation-architecture
 
 如果上游 reviewer 更偏好单提交，等全部检查通过后再 squash。
 
+上游友好模式下，提交 5-8 不应被视为必须连续提交的一组。特别是 `Tool` removal 应等前面的
+显式输入边界、artifact state 和 runner entrypoint 已经稳定后再讨论。
+
 ## 12. 完成判据
+
+### 12.1 当前上游检查点：#108
+
+#108 只能标记为 “R1 upstream-friendly seed 已合入”，不能标记为完整 R1 完成。它满足：
+
+- invocation/project/process 的初始边界已经进入上游。
+- CLI/config/runtime 行为按 PR 验证保持兼容。
+- `Tool` 继续作为兼容门面和 runtime artifact state owner。
+
+它不满足下面的完整 R1 完成判据。
+
+### 12.2 完整 R1 终态
 
 R1 完成时必须满足：
 
@@ -935,7 +1016,8 @@ R1 完成时必须满足：
 - core invocation fields private，mutation 通过窄方法完成。
 - selected build/package state 通过 `ActiveBuildContext` 和 `VariableScope` 表示。
 - `ProcessContext` 显式承载 workdir、workspace、variable scope 和 optional `KERNEL_ELF`。
-- Cargo executable resolution 返回 `CargoBuildOutcome`，不写 `InvocationState`。
+- Cargo executable resolution 返回明确的 build fact，例如当前的 `ResolvedCargoArtifact`
+  或后续真实需要的 outcome 类型；build pipeline 不直接写 `InvocationState`。
 - runtime `.elf` / `.bin` preparation 独立于 Cargo build pipeline。
 - business behavior 位于明确模块和服务中。
 - 不再有跨模块 `impl Tool`。

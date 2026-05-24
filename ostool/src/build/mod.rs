@@ -18,12 +18,13 @@
 //! // See .build.toml for example configuration format
 //! ```
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::{
     Tool,
+    artifact::runtime::{RuntimeArtifactOptions, prepare_runtime_artifacts},
     build::{
-        cargo_pipeline::CargoBuildPipeline,
+        cargo_pipeline::{CargoBuildOutcome, CargoBuildPipeline},
         config::{Cargo, Custom},
     },
     run::{
@@ -161,9 +162,11 @@ impl Tool {
     /// Returns an error if the Cargo build fails.
     pub async fn cargo_build(&mut self, config: &Cargo) -> anyhow::Result<()> {
         self.sync_cargo_context(config);
-        cargo_pipeline::CargoBuildPipeline::build_auto(self, config)
+        let outcome = cargo_pipeline::CargoBuildPipeline::build_auto(self, config)
             .execute()
             .await?;
+        self.apply_cargo_build_outcome(config, &outcome, false)?;
+        self.run_cargo_post_build_cmds(config)?;
         Ok(())
     }
 
@@ -194,12 +197,14 @@ impl Tool {
         debug: bool,
     ) -> anyhow::Result<()> {
         let build_config_path = self.ctx.build_config_path.clone();
-        CargoBuildPipeline::build(self, config, build_config_path)
+        let outcome = CargoBuildPipeline::build(self, config, build_config_path)
             .debug(debug)
             .skip_objcopy(true)
             .resolve_artifact_from_json(true)
             .execute()
             .await?;
+        self.apply_cargo_build_outcome(config, &outcome, true)?;
+        self.run_cargo_post_build_cmds(config)?;
         Ok(())
     }
 
@@ -223,12 +228,14 @@ impl Tool {
 
         let debug = matches!(runner, CargoRunnerKind::Qemu(args) if args.debug);
 
-        CargoBuildPipeline::build(self, config, build_config_path)
+        let outcome = CargoBuildPipeline::build(self, config, build_config_path)
             .debug(debug)
             .skip_objcopy(true)
             .resolve_artifact_from_json(true)
             .execute()
             .await?;
+        self.apply_cargo_build_outcome(config, &outcome, true)?;
+        self.run_cargo_post_build_cmds(config)?;
 
         match runner {
             CargoRunnerKind::Qemu(args) => {
@@ -261,5 +268,101 @@ impl Tool {
         }
 
         Ok(())
+    }
+
+    fn apply_cargo_build_outcome(
+        &mut self,
+        config: &Cargo,
+        outcome: &CargoBuildOutcome,
+        skip_objcopy: bool,
+    ) -> anyhow::Result<()> {
+        let resolved = outcome.resolved_artifact();
+        let process_context = self.process_context()?;
+        let prepared = prepare_runtime_artifacts(
+            &process_context,
+            RuntimeArtifactOptions {
+                elf_path: resolved.elf_path().to_path_buf(),
+                to_bin: config.to_bin && !skip_objcopy,
+                bin_dir: self.bin_dir(),
+                debug: self.debug_enabled(),
+                cargo_artifact_dir: Some(resolved.cargo_artifact_dir().to_path_buf()),
+                strip_elf: false,
+                objcopy_program: PathBuf::from("rust-objcopy"),
+            },
+        )?;
+        self.apply_prepared_runtime_artifacts(prepared);
+        Ok(())
+    }
+
+    fn run_cargo_post_build_cmds(&mut self, config: &Cargo) -> anyhow::Result<()> {
+        let process_context = self.process_context()?;
+        for cmd in &config.post_build_cmds {
+            crate::process::shell_run_cmd(&process_context, cmd)?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use crate::{
+        Tool, ToolConfig,
+        build::{
+            artifact_selector::ResolvedCargoArtifact,
+            cargo_pipeline::CargoBuildOutcome,
+            config::{Cargo, CargoBuildProfile},
+        },
+    };
+
+    #[test]
+    fn apply_cargo_build_outcome_records_runtime_artifact_state() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(
+            temp.path().join("Cargo.toml"),
+            "[package]\nname = \"kernel\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+        fs::create_dir_all(temp.path().join("src")).unwrap();
+        fs::write(temp.path().join("src/main.rs"), "fn main() {}\n").unwrap();
+
+        let cargo_artifact_dir = temp.path().join("target/aarch64/debug");
+        fs::create_dir_all(&cargo_artifact_dir).unwrap();
+        let elf_path = cargo_artifact_dir.join("kernel");
+        fs::copy(std::env::current_exe().unwrap(), &elf_path).unwrap();
+
+        let config = Cargo {
+            target: "aarch64-unknown-none".into(),
+            package: "kernel".into(),
+            profile: Some(CargoBuildProfile::Debug),
+            to_bin: true,
+            ..Default::default()
+        };
+        let mut tool = Tool::new(ToolConfig {
+            manifest: Some(temp.path().to_path_buf()),
+            ..Default::default()
+        })
+        .unwrap();
+        let outcome = CargoBuildOutcome::new(ResolvedCargoArtifact::new(
+            elf_path.clone(),
+            cargo_artifact_dir.clone(),
+        ));
+
+        tool.apply_cargo_build_outcome(&config, &outcome, true)
+            .unwrap();
+
+        let expected_elf = elf_path.canonicalize().unwrap();
+        assert_eq!(tool.ctx.artifacts.elf.as_ref(), Some(&expected_elf));
+        assert!(tool.ctx.artifacts.bin.is_none());
+        assert_eq!(
+            tool.ctx.artifacts.cargo_artifact_dir.as_ref(),
+            Some(&cargo_artifact_dir)
+        );
+        assert_eq!(
+            tool.ctx.artifacts.runtime_artifact_dir.as_ref(),
+            Some(&cargo_artifact_dir)
+        );
+        assert!(tool.ctx.arch.is_some());
     }
 }

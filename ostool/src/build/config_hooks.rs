@@ -33,7 +33,7 @@ fn feature_select_hook(workspace_dir: &Path) -> ElementHook {
                 return Ok(HookFlow::Consumed);
             }
 
-            let feature_options = collect_feature_options(&cargo_toml, &package, None)?;
+            let feature_options = collect_feature_options(&cargo_toml, &package)?;
             let options = feature_options
                 .into_iter()
                 .map(|feature| HookOption::new(feature.clone(), feature))
@@ -172,7 +172,6 @@ fn fallback_rustup_targets() -> anyhow::Result<(Vec<HookOption>, String)> {
 fn collect_feature_options(
     manifest_path: &Path,
     package_name: &str,
-    deps_filter: Option<&[String]>,
 ) -> anyhow::Result<Vec<String>> {
     let metadata = cargo_metadata::MetadataCommand::new()
         .manifest_path(manifest_path)
@@ -193,14 +192,6 @@ fn collect_feature_options(
     features.sort();
 
     for dependency in &pkg.dependencies {
-        let include = match deps_filter {
-            Some(filter) => filter.contains(&dependency.name),
-            None => true,
-        };
-        if !include {
-            continue;
-        }
-
         let Some(dep_pkg) = metadata
             .packages
             .iter()

@@ -29,7 +29,6 @@ use uboot_shell::UbootShell;
 
 use crate::{
     Tool,
-    artifact::state::OutputArtifacts,
     board::{
         client::{
             BoardServerClient, BootConfig as RemoteBootConfig, BootProfileResponse,
@@ -377,9 +376,7 @@ impl Tool {
         config.replace_strings(&scope)?;
         config.normalize("U-Boot runtime config")?;
         let backend = LocalBackend::new(config.local.clone());
-        let artifacts = self.runtime_artifacts().clone();
-        let arch = self.runtime_arch();
-        let mut runner = Runner::new(self, config, backend, artifacts, arch);
+        let mut runner = Runner::new(self, config, backend);
         runner.run().await
     }
 
@@ -391,9 +388,7 @@ impl Tool {
     ) -> anyhow::Result<()> {
         let config = UbootConfig::from_board_run_config(board_config);
         let backend = RemoteBackend::new(client, session);
-        let artifacts = self.runtime_artifacts().clone();
-        let arch = self.runtime_arch();
-        let mut runner = Runner::new(self, config, backend, artifacts, arch);
+        let mut runner = Runner::new(self, config, backend);
         runner.run().await
     }
 }
@@ -440,8 +435,6 @@ async fn ensure_uboot_config_at_path(
 struct Runner<'a, B> {
     tool: &'a mut Tool,
     config: UbootConfig,
-    artifacts: OutputArtifacts,
-    arch: Option<object::Architecture>,
     success_regex: Vec<regex::Regex>,
     fail_regex: Vec<regex::Regex>,
     backend: B,
@@ -1004,18 +997,10 @@ impl<'a, B> Runner<'a, B>
 where
     B: RunnerBackend,
 {
-    fn new(
-        tool: &'a mut Tool,
-        config: UbootConfig,
-        backend: B,
-        artifacts: OutputArtifacts,
-        arch: Option<object::Architecture>,
-    ) -> Self {
+    fn new(tool: &'a mut Tool, config: UbootConfig, backend: B) -> Self {
         Self {
             tool,
             config,
-            artifacts,
-            arch,
             success_regex: vec![],
             fail_regex: vec![],
             backend,
@@ -1051,7 +1036,8 @@ where
         );
 
         let arch = self
-            .arch
+            .tool
+            .runtime_arch()
             .ok_or_else(|| anyhow!("Cannot determine architecture for FIT image generation"))?;
         let arch = match arch {
             object::Architecture::Aarch64 => "arm64",
@@ -1147,9 +1133,12 @@ where
     async fn _run(&mut self) -> anyhow::Result<()> {
         self.prepare_regex()?;
         self.tool.ensure_runtime_bin()?;
-        self.refresh_runtime_artifacts();
 
-        let kernel = self.artifacts.require_bin("bin not exist")?.to_path_buf();
+        let kernel = self
+            .tool
+            .runtime_artifacts()
+            .require_bin("bin not exist")?
+            .to_path_buf();
 
         info!("Starting U-Boot runner...");
 
@@ -1410,11 +1399,6 @@ where
             }
         }
         Ok(())
-    }
-
-    fn refresh_runtime_artifacts(&mut self) {
-        self.artifacts = self.tool.runtime_artifacts().clone();
-        self.arch = self.tool.runtime_arch();
     }
 
     fn prepare_regex(&mut self) -> anyhow::Result<()> {

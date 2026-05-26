@@ -202,10 +202,7 @@ impl Tool {
     }
 
     /// Imports an ELF artifact through the runtime artifact preparation path.
-    ///
-    /// This is the non-legacy orchestration entrypoint used by the CLI binaries.
-    /// [`Tool::prepare_elf_artifact`] remains as a compatibility wrapper.
-    pub async fn prepare_runtime_artifacts_from_elf(
+    pub(crate) async fn prepare_runtime_artifacts_from_elf(
         &mut self,
         path: PathBuf,
         to_bin: bool,
@@ -233,16 +230,15 @@ impl Tool {
 
     /// Converts the ELF file to raw binary format.
     fn objcopy_output_bin(&mut self) -> anyhow::Result<PathBuf> {
-        if let Some(bin) = &self.ctx.artifacts.bin {
+        if let Some(bin) = self.ctx.artifacts.bin() {
             debug!("BIN file already exists: {:?}", bin);
-            return Ok(bin.clone());
+            return Ok(bin.to_path_buf());
         }
 
         let elf_path = self
             .ctx
             .artifacts
-            .elf
-            .as_ref()
+            .elf()
             .ok_or_else(|| anyhow!("elf not exist"))?;
         let process_context = self.process_context()?;
         let prepared = prepare_runtime_artifacts(
@@ -252,7 +248,7 @@ impl Tool {
                 to_bin: true,
                 bin_dir: self.bin_dir(),
                 debug: self.debug_enabled(),
-                cargo_artifact_dir: self.ctx.artifacts.cargo_artifact_dir.clone(),
+                cargo_artifact_dir: self.ctx.artifacts.cargo_artifact_dir().map(PathBuf::from),
                 strip_elf: false,
                 objcopy_program: PathBuf::from("rust-objcopy"),
             },
@@ -326,7 +322,7 @@ impl Tool {
             self.manifest_dir.clone(),
             self.workspace_dir.clone(),
             self.variable_scope()?,
-            self.ctx.artifacts.elf.clone(),
+            self.ctx.artifacts.elf().map(PathBuf::from),
         ))
     }
 
@@ -346,7 +342,6 @@ mod tests {
     use crate::build::config::{BuildConfig, BuildSystem, Cargo};
     use crate::run::qemu::resolve_qemu_config_path_in_dir;
     use crate::{process, project::variables};
-    use jkconfig::data::ElementHook;
     use object::Architecture;
     use std::{
         collections::HashMap,
@@ -393,17 +388,17 @@ mod tests {
         let expected_elf = copied.canonicalize().unwrap();
         let expected_dir = expected_elf.parent().unwrap().to_path_buf();
 
-        assert_eq!(tool.ctx.artifacts.elf.as_ref(), Some(&expected_elf));
+        assert_eq!(tool.ctx.artifacts.elf(), Some(expected_elf.as_path()));
         assert_eq!(
-            tool.ctx.artifacts.cargo_artifact_dir.as_ref(),
-            Some(&expected_dir)
+            tool.ctx.artifacts.cargo_artifact_dir(),
+            Some(expected_dir.as_path())
         );
         assert_eq!(
-            tool.ctx.artifacts.runtime_artifact_dir.as_ref(),
-            Some(&expected_dir)
+            tool.ctx.artifacts.runtime_artifact_dir(),
+            Some(expected_dir.as_path())
         );
         assert!(tool.ctx.arch.is_some());
-        assert!(tool.ctx.artifacts.bin.is_none());
+        assert!(tool.ctx.artifacts.bin().is_none());
     }
 
     #[test]
@@ -851,31 +846,6 @@ to_bin = false
         assert_eq!(
             fs::read_to_string(output).unwrap(),
             copied.canonicalize().unwrap().display().to_string()
-        );
-    }
-
-    #[test]
-    fn ui_hooks_include_system_target_hook() {
-        let temp = tempfile::tempdir().unwrap();
-        fs::write(
-            temp.path().join("Cargo.toml"),
-            "[package]\nname = \"sample\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
-        )
-        .unwrap();
-        fs::create_dir_all(temp.path().join("src")).unwrap();
-        fs::write(temp.path().join("src/lib.rs"), "").unwrap();
-
-        let tool = Tool::new(ToolConfig {
-            manifest: Some(temp.path().to_path_buf()),
-            ..Default::default()
-        })
-        .unwrap();
-
-        let hooks: Vec<ElementHook> = tool.ui_hooks();
-        assert!(
-            hooks
-                .iter()
-                .any(|hook| hook.path.as_key() == "system.target")
         );
     }
 

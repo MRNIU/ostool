@@ -150,7 +150,7 @@ async fn try_main() -> anyhow::Result<()> {
 
     let mut tool = Tool::from_invocation(invocation);
 
-    tool.prepare_runtime_artifacts_from_elf(elf, to_bin).await?;
+    tool.prepare_elf_artifact(elf, to_bin).await?;
 
     match command {
         Some(SubCommands::Uboot(_)) => {

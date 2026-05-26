@@ -34,8 +34,8 @@ use crate::{
 };
 
 mod artifact_selector;
-pub mod config_hooks;
-pub mod config_loader;
+pub(crate) mod config_hooks;
+pub(crate) mod config_loader;
 
 /// Cargo pipeline implementation for building projects.
 mod cargo_pipeline;
@@ -173,7 +173,7 @@ impl Tool {
     }
 
     /// Builds or imports the configured artifact and prepares the runtime outputs.
-    pub async fn prepare_runtime_artifacts(
+    pub(crate) async fn prepare_runtime_artifacts(
         &mut self,
         config: &config::BuildConfig,
         debug: bool,
@@ -356,15 +356,15 @@ mod tests {
             .unwrap();
 
         let expected_elf = elf_path.canonicalize().unwrap();
-        assert_eq!(tool.ctx.artifacts.elf.as_ref(), Some(&expected_elf));
-        assert!(tool.ctx.artifacts.bin.is_none());
+        assert_eq!(tool.ctx.artifacts.elf(), Some(expected_elf.as_path()));
+        assert!(tool.ctx.artifacts.bin().is_none());
         assert_eq!(
-            tool.ctx.artifacts.cargo_artifact_dir.as_ref(),
-            Some(&cargo_artifact_dir)
+            tool.ctx.artifacts.cargo_artifact_dir(),
+            Some(cargo_artifact_dir.as_path())
         );
         assert_eq!(
-            tool.ctx.artifacts.runtime_artifact_dir.as_ref(),
-            Some(&cargo_artifact_dir)
+            tool.ctx.artifacts.runtime_artifact_dir(),
+            Some(cargo_artifact_dir.as_path())
         );
         assert!(tool.ctx.arch.is_some());
     }

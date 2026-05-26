@@ -105,6 +105,12 @@ struct CargoSelectorArgs {
     bin: Option<String>,
 }
 
+impl CargoSelectorArgs {
+    fn is_empty(&self) -> bool {
+        self.package.is_none() && self.bin.is_none()
+    }
+}
+
 #[derive(Args, Debug)]
 struct BoardRunArgs {
     /// Path to the build configuration file
@@ -257,8 +263,13 @@ async fn try_main() -> Result<()> {
                         });
                         tool.cargo_run(config, &kind).await?;
                     }
-                    build::config::BuildSystem::Custom(_custom_cfg) => {
-                        tool.prepare_runtime_artifacts(&build_config, debug).await?;
+                    build::config::BuildSystem::Custom(custom_cfg) => {
+                        tool.build_with_config(&build_config).await?;
+                        tool.prepare_elf_artifact(
+                            custom_cfg.elf_path.clone().into(),
+                            custom_cfg.to_bin,
+                        )
+                        .await?;
                         let qemu_config =
                             load_qemu_config(&mut tool, &manifest_ctx, qemu.qemu_config.as_deref())
                                 .await?;
@@ -299,8 +310,13 @@ async fn try_main() -> Result<()> {
                         });
                         tool.cargo_run(config, &kind).await?;
                     }
-                    build::config::BuildSystem::Custom(_custom_cfg) => {
-                        tool.prepare_runtime_artifacts(&build_config, false).await?;
+                    build::config::BuildSystem::Custom(custom_cfg) => {
+                        tool.build_with_config(&build_config).await?;
+                        tool.prepare_elf_artifact(
+                            custom_cfg.elf_path.clone().into(),
+                            custom_cfg.to_bin,
+                        )
+                        .await?;
                         let uboot_config = load_uboot_config(
                             &mut tool,
                             &manifest_ctx,
@@ -343,20 +359,13 @@ async fn load_build_config(
     manifest: &ManifestContext,
     config_path: Option<&std::path::Path>,
 ) -> Result<build::config::BuildConfig> {
-    let hooks = build::config_hooks::build_config_hooks(&manifest.workspace_dir);
-    let loaded = build::config_loader::load_build_config(
-        &manifest.workspace_dir,
-        config_path.map(std::path::Path::to_path_buf),
-        false,
-        &hooks,
-        true,
-    )
-    .await?;
-
-    tool.set_build_config_path(Some(loaded.path().to_path_buf()));
-    let build_config = loaded.into_config();
-    tool.ctx_mut().build_config = Some(build_config.clone());
-    Ok(build_config)
+    match config_path {
+        Some(path) => tool.load_build_config_from_path(path, false).await,
+        None => {
+            tool.load_build_config_from_dir(&manifest.workspace_dir, false)
+                .await
+        }
+    }
 }
 
 /// Applies `--package` and `--bin` overrides to Cargo build configs.
@@ -365,11 +374,20 @@ fn apply_cargo_selector(
     build_config: &mut build::config::BuildConfig,
     selector: &CargoSelectorArgs,
 ) -> Result<()> {
-    build::config_loader::apply_cargo_selector(
-        build_config,
-        selector.package.as_deref(),
-        selector.bin.as_deref(),
-    )?;
+    if selector.is_empty() {
+        return Ok(());
+    }
+
+    let build::config::BuildSystem::Cargo(cargo_config) = &mut build_config.system else {
+        anyhow::bail!("--package/--bin can only be used with system.Cargo build configs");
+    };
+
+    if let Some(package) = &selector.package {
+        cargo_config.package = package.clone();
+    }
+    if let Some(bin) = &selector.bin {
+        cargo_config.bin = Some(bin.clone());
+    }
     tool.ctx_mut().build_config = Some(build_config.clone());
     Ok(())
 }
@@ -624,7 +642,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_board_run_with_board_type() {
+    fn parse_board_run_defaults_to_no_overrides() {
         let cli = Cli::try_parse_from(["ostool", "board", "run"]).unwrap();
 
         match cli.command {

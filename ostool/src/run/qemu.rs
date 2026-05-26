@@ -45,7 +45,6 @@ use tokio::{
 
 use crate::{
     Tool,
-    artifact::state::OutputArtifacts,
     build::config::Cargo,
     project::variables::{self, VariableScope},
     run::{
@@ -315,13 +314,9 @@ async fn run_qemu_with_config(
     run_args: RunQemuOptions,
     config: QemuConfig,
 ) -> anyhow::Result<()> {
-    let artifacts = tool.runtime_artifacts().clone();
-    let arch = tool.runtime_arch();
     let mut runner = QemuRunner {
         tool,
         config,
-        artifacts,
-        arch,
         dtbdump: run_args.dtb_dump,
         success_regex: vec![],
         fail_regex: vec![],
@@ -332,8 +327,6 @@ async fn run_qemu_with_config(
 struct QemuRunner<'a> {
     tool: &'a mut Tool,
     config: QemuConfig,
-    artifacts: OutputArtifacts,
-    arch: Option<Architecture>,
     dtbdump: bool,
     success_regex: Vec<regex::Regex>,
     fail_regex: Vec<regex::Regex>,
@@ -345,10 +338,9 @@ impl QemuRunner<'_> {
 
         if self.config.to_bin {
             self.tool.ensure_runtime_bin()?;
-            self.refresh_runtime_artifacts();
         }
 
-        let detected_arch = self.arch.ok_or_else(|| {
+        let detected_arch = self.tool.runtime_arch().ok_or_else(|| {
             anyhow!("Please specify `arch` in QEMU config or provide a valid ELF file.")
         })?;
         let arch = format!("{detected_arch:?}").to_lowercase();
@@ -430,7 +422,9 @@ impl QemuRunner<'_> {
             }
         }
 
-        if use_kernel_loader && let Some(kernel_path) = self.artifacts.runtime_image() {
+        if use_kernel_loader
+            && let Some(kernel_path) = self.tool.runtime_artifacts().runtime_image()
+        {
             cmd.arg("-kernel").arg(kernel_path);
         }
         cmd.stdin(Stdio::piped());
@@ -551,7 +545,8 @@ impl QemuRunner<'_> {
         }
 
         let arch = self
-            .arch
+            .tool
+            .runtime_arch()
             .ok_or_else(|| anyhow::anyhow!("Cannot determine architecture for OVMF preparation"))?;
         let tmp = std::env::temp_dir();
         let bios_dir = tmp.join("ostool").join("ovmf");
@@ -585,12 +580,14 @@ impl QemuRunner<'_> {
 
     async fn prepare_uefi_esp(&self, arch: Arch) -> anyhow::Result<PathBuf> {
         let bin_path = self
-            .artifacts
-            .require_bin("UEFI boot requires a BIN artifact")?;
+            .tool
+            .runtime_artifacts()
+            .require_bin("UEFI boot requires a BIN artifact")?
+            .to_path_buf();
         let stem = bin_path
             .file_stem()
             .ok_or_else(|| anyhow!("invalid BIN path: {}", bin_path.display()))?;
-        let artifact_dir = self.uefi_artifact_dir(bin_path)?;
+        let artifact_dir = self.uefi_artifact_dir(&bin_path)?;
         let esp_dir = artifact_dir.join(format!("{}.esp", stem.to_string_lossy()));
         let boot_dir = esp_dir.join("EFI").join("BOOT");
         fs::create_dir_all(&boot_dir)
@@ -598,7 +595,7 @@ impl QemuRunner<'_> {
             .with_path("failed to create directory", &boot_dir)?;
 
         let boot_path = boot_dir.join(Self::default_uefi_boot_filename(arch));
-        fs::copy(bin_path, &boot_path).await.with_context(|| {
+        fs::copy(&bin_path, &boot_path).await.with_context(|| {
             format!(
                 "failed to copy EFI image from {} to {}",
                 bin_path.display(),
@@ -610,7 +607,7 @@ impl QemuRunner<'_> {
     }
 
     fn uefi_artifact_dir(&self, bin_path: &Path) -> anyhow::Result<PathBuf> {
-        if let Some(dir) = self.artifacts.runtime_artifact_dir() {
+        if let Some(dir) = self.tool.runtime_artifacts().runtime_artifact_dir() {
             return Ok(dir.to_path_buf());
         }
 
@@ -625,12 +622,14 @@ impl QemuRunner<'_> {
 
     async fn prepare_uefi_vars(&self, vars_template: &Path) -> anyhow::Result<PathBuf> {
         let bin_path = self
-            .artifacts
-            .require_bin("UEFI boot requires a BIN artifact")?;
+            .tool
+            .runtime_artifacts()
+            .require_bin("UEFI boot requires a BIN artifact")?
+            .to_path_buf();
         let stem = bin_path
             .file_stem()
             .ok_or_else(|| anyhow!("invalid BIN path: {}", bin_path.display()))?;
-        let artifact_dir = self.uefi_artifact_dir(bin_path)?;
+        let artifact_dir = self.uefi_artifact_dir(&bin_path)?;
         fs::create_dir_all(&artifact_dir)
             .await
             .with_path("failed to create directory", &artifact_dir)?;
@@ -645,11 +644,6 @@ impl QemuRunner<'_> {
         })?;
 
         Ok(vars)
-    }
-
-    fn refresh_runtime_artifacts(&mut self) {
-        self.artifacts = self.tool.runtime_artifacts().clone();
-        self.arch = self.tool.runtime_arch();
     }
 
     fn default_uefi_boot_filename(arch: Arch) -> &'static str {
@@ -1059,15 +1053,13 @@ timeout = 0
         let tmp = TempDir::new().unwrap();
         write_single_crate_manifest(tmp.path());
         let mut tool = make_tool(tmp.path());
-        tool.ctx.artifacts.runtime_artifact_dir = Some(runtime_dir.clone());
-        let artifacts = tool.runtime_artifacts().clone();
-        let arch = tool.runtime_arch();
+        tool.ctx
+            .artifacts
+            .set_runtime_artifact_dir(runtime_dir.clone());
 
         let runner = QemuRunner {
             tool: &mut tool,
             config: QemuConfig::default(),
-            artifacts,
-            arch,
             dtbdump: false,
             success_regex: vec![],
             fail_regex: vec![],

@@ -29,6 +29,7 @@ use uboot_shell::UbootShell;
 
 use crate::{
     Tool,
+    artifact::state::OutputArtifacts,
     board::{
         client::{
             BoardServerClient, BootConfig as RemoteBootConfig, BootProfileResponse,
@@ -376,7 +377,9 @@ impl Tool {
         config.replace_strings(&scope)?;
         config.normalize("U-Boot runtime config")?;
         let backend = LocalBackend::new(config.local.clone());
-        let mut runner = Runner::new(self, config, backend);
+        let artifacts = self.runtime_artifacts().clone();
+        let arch = self.runtime_arch();
+        let mut runner = Runner::new(self, config, backend, artifacts, arch);
         runner.run().await
     }
 
@@ -388,7 +391,9 @@ impl Tool {
     ) -> anyhow::Result<()> {
         let config = UbootConfig::from_board_run_config(board_config);
         let backend = RemoteBackend::new(client, session);
-        let mut runner = Runner::new(self, config, backend);
+        let artifacts = self.runtime_artifacts().clone();
+        let arch = self.runtime_arch();
+        let mut runner = Runner::new(self, config, backend, artifacts, arch);
         runner.run().await
     }
 }
@@ -435,6 +440,8 @@ async fn ensure_uboot_config_at_path(
 struct Runner<'a, B> {
     tool: &'a mut Tool,
     config: UbootConfig,
+    artifacts: OutputArtifacts,
+    arch: Option<object::Architecture>,
     success_regex: Vec<regex::Regex>,
     fail_regex: Vec<regex::Regex>,
     backend: B,
@@ -902,10 +909,9 @@ impl RunnerBackend for RemoteBackend {
                 )
             })?;
         let output_dir = tool
-            .ctx()
-            .artifacts
-            .runtime_artifact_dir
-            .clone()
+            .runtime_artifacts()
+            .runtime_artifact_dir()
+            .map(PathBuf::from)
             .unwrap_or_else(std::env::temp_dir);
         fs::create_dir_all(&output_dir)
             .await
@@ -998,10 +1004,18 @@ impl<'a, B> Runner<'a, B>
 where
     B: RunnerBackend,
 {
-    fn new(tool: &'a mut Tool, config: UbootConfig, backend: B) -> Self {
+    fn new(
+        tool: &'a mut Tool,
+        config: UbootConfig,
+        backend: B,
+        artifacts: OutputArtifacts,
+        arch: Option<object::Architecture>,
+    ) -> Self {
         Self {
             tool,
             config,
+            artifacts,
+            arch,
             success_regex: vec![],
             fail_regex: vec![],
             backend,
@@ -1036,7 +1050,10 @@ where
             Byte::from(kernel_data.len())
         );
 
-        let arch = match self.tool.ctx.arch.as_ref().unwrap() {
+        let arch = self
+            .arch
+            .ok_or_else(|| anyhow!("Cannot determine architecture for FIT image generation"))?;
+        let arch = match arch {
             object::Architecture::Aarch64 => "arm64",
             object::Architecture::Arm => "arm",
             object::Architecture::LoongArch64 => "loongarch64",
@@ -1129,16 +1146,10 @@ where
 
     async fn _run(&mut self) -> anyhow::Result<()> {
         self.prepare_regex()?;
-        self.tool.objcopy_output_bin()?;
+        self.tool.ensure_runtime_bin()?;
+        self.refresh_runtime_artifacts();
 
-        let kernel = self
-            .tool
-            .ctx
-            .artifacts
-            .bin
-            .as_ref()
-            .ok_or(anyhow!("bin not exist"))?
-            .clone();
+        let kernel = self.artifacts.require_bin("bin not exist")?.to_path_buf();
 
         info!("Starting U-Boot runner...");
 
@@ -1399,6 +1410,11 @@ where
             }
         }
         Ok(())
+    }
+
+    fn refresh_runtime_artifacts(&mut self) {
+        self.artifacts = self.tool.runtime_artifacts().clone();
+        self.arch = self.tool.runtime_arch();
     }
 
     fn prepare_regex(&mut self) -> anyhow::Result<()> {

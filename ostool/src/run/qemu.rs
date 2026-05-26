@@ -45,6 +45,7 @@ use tokio::{
 
 use crate::{
     Tool,
+    artifact::state::OutputArtifacts,
     build::config::Cargo,
     project::variables::{self, VariableScope},
     run::{
@@ -155,12 +156,12 @@ pub struct RunQemuOptions {
 impl Tool {
     /// Returns the default QEMU runtime configuration for the current tool context.
     pub fn default_qemu_config(&self) -> QemuConfig {
-        build_default_qemu_config(self.ctx.arch)
+        build_default_qemu_config(self.runtime_arch())
     }
 
     /// Returns the default QEMU runtime configuration for a Cargo build config.
     pub fn default_qemu_config_for_cargo(&self, cargo: &Cargo) -> QemuConfig {
-        build_default_qemu_config(infer_target_arch(&cargo.target).or(self.ctx.arch))
+        build_default_qemu_config(infer_target_arch(&cargo.target).or(self.runtime_arch()))
     }
 
     pub async fn read_qemu_config_from_path_for_cargo(
@@ -180,7 +181,7 @@ impl Tool {
     ) -> anyhow::Result<QemuConfig> {
         self.sync_cargo_context(cargo);
         let package_dir = self.resolve_package_manifest_dir(&cargo.package)?;
-        let arch = infer_target_arch(&cargo.target).or(self.ctx.arch);
+        let arch = infer_target_arch(&cargo.target).or(self.runtime_arch());
         let config_path = resolve_qemu_config_path_in_dir(&package_dir, arch, None)?;
         let default_config = self.default_qemu_config_for_cargo(cargo);
         let scope = self.variable_scope()?;
@@ -195,7 +196,7 @@ impl Tool {
         self.sync_cargo_context(cargo);
         let scope = self.variable_scope()?;
         let dir = variables::expand_path_variables(dir, &scope)?;
-        let arch = infer_target_arch(&cargo.target).or(self.ctx.arch);
+        let arch = infer_target_arch(&cargo.target).or(self.runtime_arch());
         let config_path = resolve_qemu_config_path_in_dir(&dir, arch, None)?;
         let default_config = self.default_qemu_config_for_cargo(cargo);
         ensure_qemu_config_at_path(&scope, config_path, default_config).await
@@ -205,7 +206,7 @@ impl Tool {
     pub async fn ensure_qemu_config_in_dir(&mut self, dir: &Path) -> anyhow::Result<QemuConfig> {
         let scope = self.variable_scope()?;
         let dir = variables::expand_path_variables(dir, &scope)?;
-        let config_path = resolve_qemu_config_path_in_dir(&dir, self.ctx.arch, None)?;
+        let config_path = resolve_qemu_config_path_in_dir(&dir, self.runtime_arch(), None)?;
         let default_config = self.default_qemu_config();
         ensure_qemu_config_at_path(&scope, config_path, default_config).await
     }
@@ -314,9 +315,13 @@ async fn run_qemu_with_config(
     run_args: RunQemuOptions,
     config: QemuConfig,
 ) -> anyhow::Result<()> {
+    let artifacts = tool.runtime_artifacts().clone();
+    let arch = tool.runtime_arch();
     let mut runner = QemuRunner {
         tool,
         config,
+        artifacts,
+        arch,
         dtbdump: run_args.dtb_dump,
         success_regex: vec![],
         fail_regex: vec![],
@@ -327,6 +332,8 @@ async fn run_qemu_with_config(
 struct QemuRunner<'a> {
     tool: &'a mut Tool,
     config: QemuConfig,
+    artifacts: OutputArtifacts,
+    arch: Option<Architecture>,
     dtbdump: bool,
     success_regex: Vec<regex::Regex>,
     fail_regex: Vec<regex::Regex>,
@@ -337,10 +344,11 @@ impl QemuRunner<'_> {
         self.prepare_regex()?;
 
         if self.config.to_bin {
-            self.tool.objcopy_output_bin()?;
+            self.tool.ensure_runtime_bin()?;
+            self.refresh_runtime_artifacts();
         }
 
-        let detected_arch = self.tool.ctx.arch.ok_or_else(|| {
+        let detected_arch = self.arch.ok_or_else(|| {
             anyhow!("Please specify `arch` in QEMU config or provide a valid ELF file.")
         })?;
         let arch = format!("{detected_arch:?}").to_lowercase();
@@ -422,12 +430,8 @@ impl QemuRunner<'_> {
             }
         }
 
-        if use_kernel_loader {
-            if let Some(bin_path) = &self.tool.ctx.artifacts.bin {
-                cmd.arg("-kernel").arg(bin_path);
-            } else if let Some(elf_path) = &self.tool.ctx.artifacts.elf {
-                cmd.arg("-kernel").arg(elf_path);
-            }
+        if use_kernel_loader && let Some(kernel_path) = self.artifacts.runtime_image() {
+            cmd.arg("-kernel").arg(kernel_path);
         }
         cmd.stdin(Stdio::piped());
         cmd.stdout(Stdio::piped());
@@ -546,10 +550,9 @@ impl QemuRunner<'_> {
             return Ok(None);
         }
 
-        let arch =
-            self.tool.ctx.arch.as_ref().ok_or_else(|| {
-                anyhow::anyhow!("Cannot determine architecture for OVMF preparation")
-            })?;
+        let arch = self
+            .arch
+            .ok_or_else(|| anyhow::anyhow!("Cannot determine architecture for OVMF preparation"))?;
         let tmp = std::env::temp_dir();
         let bios_dir = tmp.join("ostool").join("ovmf");
         fs::create_dir_all(&bios_dir)
@@ -582,12 +585,8 @@ impl QemuRunner<'_> {
 
     async fn prepare_uefi_esp(&self, arch: Arch) -> anyhow::Result<PathBuf> {
         let bin_path = self
-            .tool
-            .ctx
             .artifacts
-            .bin
-            .as_ref()
-            .ok_or_else(|| anyhow!("UEFI boot requires a BIN artifact"))?;
+            .require_bin("UEFI boot requires a BIN artifact")?;
         let stem = bin_path
             .file_stem()
             .ok_or_else(|| anyhow!("invalid BIN path: {}", bin_path.display()))?;
@@ -611,8 +610,8 @@ impl QemuRunner<'_> {
     }
 
     fn uefi_artifact_dir(&self, bin_path: &Path) -> anyhow::Result<PathBuf> {
-        if let Some(dir) = &self.tool.ctx.artifacts.runtime_artifact_dir {
-            return Ok(dir.clone());
+        if let Some(dir) = self.artifacts.runtime_artifact_dir() {
+            return Ok(dir.to_path_buf());
         }
 
         let bin_path = bin_path
@@ -626,12 +625,8 @@ impl QemuRunner<'_> {
 
     async fn prepare_uefi_vars(&self, vars_template: &Path) -> anyhow::Result<PathBuf> {
         let bin_path = self
-            .tool
-            .ctx
             .artifacts
-            .bin
-            .as_ref()
-            .ok_or_else(|| anyhow!("UEFI boot requires a BIN artifact"))?;
+            .require_bin("UEFI boot requires a BIN artifact")?;
         let stem = bin_path
             .file_stem()
             .ok_or_else(|| anyhow!("invalid BIN path: {}", bin_path.display()))?;
@@ -650,6 +645,11 @@ impl QemuRunner<'_> {
         })?;
 
         Ok(vars)
+    }
+
+    fn refresh_runtime_artifacts(&mut self) {
+        self.artifacts = self.tool.runtime_artifacts().clone();
+        self.arch = self.tool.runtime_arch();
     }
 
     fn default_uefi_boot_filename(arch: Arch) -> &'static str {
@@ -681,7 +681,7 @@ pub(crate) fn resolve_qemu_config_path(
     tool: &Tool,
     explicit_path: Option<PathBuf>,
 ) -> anyhow::Result<PathBuf> {
-    resolve_qemu_config_path_in_dir(tool.workspace_dir(), tool.ctx.arch, explicit_path)
+    resolve_qemu_config_path_in_dir(tool.workspace_dir(), tool.runtime_arch(), explicit_path)
 }
 
 pub(crate) fn resolve_qemu_config_path_in_dir(
@@ -770,7 +770,10 @@ mod tests {
 
     use crate::{
         Tool, ToolConfig,
-        build::config::{BuildConfig, BuildSystem, Cargo},
+        build::{
+            config::{BuildConfig, BuildSystem, Cargo},
+            config_loader,
+        },
         run::{
             output_matcher::{ByteStreamMatcher, StreamMatchKind},
             shell_init::ShellAutoInitMatcher,
@@ -1057,10 +1060,14 @@ timeout = 0
         write_single_crate_manifest(tmp.path());
         let mut tool = make_tool(tmp.path());
         tool.ctx.artifacts.runtime_artifact_dir = Some(runtime_dir.clone());
+        let artifacts = tool.runtime_artifacts().clone();
+        let arch = tool.runtime_arch();
 
         let runner = QemuRunner {
             tool: &mut tool,
             config: QemuConfig::default(),
+            artifacts,
+            arch,
             dtbdump: false,
             success_regex: vec![],
             fail_regex: vec![],
@@ -1261,21 +1268,17 @@ fail_regex = []
     #[test]
     fn build_config_explicit_path_wins() {
         let tmp = TempDir::new().unwrap();
-        write_single_crate_manifest(tmp.path());
-        let tool = make_tool(tmp.path());
 
         let explicit = tmp.path().join("custom.build.toml");
-        let result = tool.resolve_build_config_path(Some(explicit.clone()));
+        let result = config_loader::resolve_build_config_path(tmp.path(), Some(explicit.clone()));
         assert_eq!(result, explicit);
     }
 
     #[test]
     fn build_config_defaults_to_workspace_root() {
         let tmp = TempDir::new().unwrap();
-        write_single_crate_manifest(tmp.path());
-        let tool = make_tool(tmp.path());
 
-        let result = tool.resolve_build_config_path(None);
+        let result = config_loader::resolve_build_config_path(tmp.path(), None);
         assert_eq!(result, tmp.path().join(".build.toml"));
     }
 }

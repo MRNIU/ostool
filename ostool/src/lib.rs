@@ -32,6 +32,8 @@
 
 #![cfg(not(target_os = "none"))]
 
+mod artifact;
+
 /// Build system configuration and Cargo integration.
 ///
 /// Provides functionality for configuring and executing Cargo builds

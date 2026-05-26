@@ -34,6 +34,8 @@ use crate::{
 };
 
 mod artifact_selector;
+pub mod config_hooks;
+pub mod config_loader;
 
 /// Cargo pipeline implementation for building projects.
 mod cargo_pipeline;
@@ -170,7 +172,8 @@ impl Tool {
         Ok(())
     }
 
-    pub(crate) async fn prepare_runtime_artifacts(
+    /// Builds or imports the configured artifact and prepares the runtime outputs.
+    pub async fn prepare_runtime_artifacts(
         &mut self,
         config: &config::BuildConfig,
         debug: bool,
@@ -187,7 +190,7 @@ impl Tool {
 
     async fn prepare_custom_runtime_artifacts(&mut self, config: &Custom) -> anyhow::Result<()> {
         self.build_custom(config)?;
-        self.prepare_elf_artifact(config.elf_path.clone().into(), config.to_bin)
+        self.prepare_runtime_artifacts_from_elf(config.elf_path.clone().into(), config.to_bin)
             .await
     }
 

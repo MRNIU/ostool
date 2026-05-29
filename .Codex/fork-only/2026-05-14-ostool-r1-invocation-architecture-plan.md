@@ -12,9 +12,11 @@ R1 的目标是移除 `Tool` 作为中心业务对象的架构，把一次 OSToo
 **Upstream-friendly mode**，不是本文最初设想的 fork-side 一次性 API reset。#108 之后，本地
 R1d 已继续完成 build outcome seam，但仍保持 CLI、配置格式和运行时行为不变。
 
-### 2026-05-26 代码现状复核
+### 2026-05-29 代码现状复核
 
 上游 PR #111 已合入，commit 为 `9f61aac refactor(tool): 拆分构建与运行产物边界 (#111)`。
+之后上游 PR #114 已合入，commit 为 `b06de09 refactor(tool): 收敛构建配置与运行产物边界 (#114)`。
+之后上游 PR #115 已合入，commit 为 `09a1297 refactor(tool): 接入 invocation 构建状态 (#115)`。
 本次复核以当前 `main` 的实际代码路径为准，而不是只看 PR 标题或旧计划清单。
 
 已落地的边界：
@@ -23,26 +25,32 @@ R1d 已继续完成 build outcome seam，但仍保持 CLI、配置格式和运�
 - 新增 `ProjectLayout`、Cargo metadata helper、`VariableScope` 和 `ProcessContext`。
 - `project` / `process` 保持 crate-internal，`invocation` 作为当前最小公开入口。
 - build hooks、QEMU、U-Boot、board config 和 shell command 构造已改用 `VariableScope` / `ProcessContext`。
+- `OutputArtifacts` 已迁入 `artifact/state.rs`，`ctx.rs` 通过 re-export 保留兼容 API。
 - `cargo_builder.rs` 已拆为 `cargo_pipeline.rs` / `artifact_selector.rs`：
   `CargoBuildPipeline::execute()` 返回 `CargoBuildOutcome`，artifact selection 独立测试，
-  legacy orchestration 层继续把 resolved artifact 写回 `Tool` runtime state。
+  orchestration 层消费 resolved artifact，并通过 `InvocationState` / legacy bridge 同步 runtime state。
 - 新增 `ostool/src/artifact/runtime.rs`：
   `prepare_runtime_artifacts()` 统一处理 ELF canonicalization、arch detection、stripped runtime `.elf`
-  和 optional runtime `.bin`；`PreparedRuntimeArtifacts` 再由兼容桥接写回旧 `Tool.ctx.artifacts`。
+  和 optional runtime `.bin`；`PreparedRuntimeArtifacts` 再由兼容桥接写入 `InvocationState` 并同步旧
+  `Tool.ctx.artifacts`。
 - Cargo build / run path 已变成：`CargoBuildPipeline::execute()` 返回 `CargoBuildOutcome`，
-  `build/mod.rs` 的 orchestration 层消费 outcome，再调用 runtime artifact helper。
+  `build/mod.rs` 的 orchestration 层消费 outcome，再调用 runtime artifact helper；`CargoBuildPipeline`
+  不再持有 `&mut Tool`，只接收显式 `CargoBuildInput`。
+- 新增 `build/config_loader.rs` 和 `build/config_hooks.rs`；`Tool::prepare_build_config()` 已委托 loader，
+  `.build.toml` 菜单 hooks 已迁出 `Tool`。
+- #115 新增 `InvocationState` / `ActiveBuildContext` 生产接线：build config 激活、Cargo/custom build scope、
+  prepared runtime artifact 和 arch 先写入 `InvocationState`，再同步到旧 `AppContext` 兼容层。
 - 上游 #106 的 `disable_someboot_build_config` 语义保留。
 
 仍未完成的 R1 目标：
 
-- `Tool`、`ToolConfig`、`ManifestContext`、`ctx::OutputArtifacts` 仍是兼容 API，不能写成已移除。
-- `InvocationState`、`ActiveBuildContext` 尚未作为生产主路径接线；其中
-  `InvocationState` / `ActiveBuildContext` 已不属于 #108/#111 当前实现的一部分，后续如需恢复必须先说明真实消费者。
+- `Tool`、`ToolConfig`、`ManifestContext`、`ctx::OutputArtifacts` re-export 仍是兼容 API，不能写成已移除。
 - QEMU、U-Boot、board 仍有跨模块 `impl Tool`，runner/board entrypoint 尚未完全改成显式输入。
-- QEMU、U-Boot、board runner 仍从 `Tool.ctx.artifacts` 读取 runner artifact；它们没有直接接收
-  `PreparedRuntimeArtifacts` 或其它显式 artifact state。
-- `OutputArtifacts` 仍在 `ctx.rs`，尚未迁入 `artifact/state.rs`；debug artifact registry 尚不存在。
-- artifact lifecycle、someboot 注入责任收敛、debug artifact pipeline 仍属于 R2 及后续工作。
+- QEMU、U-Boot、board runner 仍通过 `Tool` 兼容门面取 runner artifact；生产读取优先走
+  `InvocationState.artifacts`，但 runner/board entrypoint 尚未直接接收 `PreparedRuntimeArtifacts`
+  或其它显式 artifact state。
+- debug artifact registry 尚不存在；artifact lifecycle、someboot 注入责任收敛、debug artifact pipeline
+  仍属于 R2 及后续工作。
 
 后续默认继续走 **Upstream-friendly incremental mode**：每个切片都应保持 CLI/config/runtime 行为不变，避免一次性 public API break。只有用户明确要求 fork-side internal API reset 时，才按本文的最终形态删除 `Tool` / `ctx`。
 
@@ -515,19 +523,19 @@ graph TD
 
 R1 按 R1a-R1i 保守切片执行。切片编号是执行顺序，不改变最终完整目标。
 
-### 2026-05-26 当前切片状态
+### 2026-05-29 当前切片状态
 
 | 切片 | 当前状态 | 说明 |
 |---|---|---|
 | R1a contract tests | 已完成（#108 范围） | 已补 `ostool build`、`run qemu`、`run uboot`、`board run` 和 `cargo-osrun` parser 护栏；已补变量替换、missing env、selected package、process env/args、`KERNEL_ELF` shell hook、Cargo artifact selector、resolved artifact 写回 runtime state 等测试。原计划中的完整 public API reset 护栏不适用于 #108 的上游友好模式。 |
-| R1b project/invocation/process seed | 已完成（#108 范围） | `ProjectLayout`、metadata helper、`InvocationOptions` / `Invocation`、`VariableScope`、`ProcessContext` 已落地；CLI 与 `cargo-osrun` 已先创建 `Invocation`，再创建兼容 `Tool` 门面。`InvocationState` / `ActiveBuildContext` 没有进入当前实现，后续不应在没有消费者时补回。 |
+| R1b project/invocation/process seed | 已完成（#108/#115 范围） | `ProjectLayout`、metadata helper、`InvocationOptions` / `Invocation`、`VariableScope`、`ProcessContext` 已落地；CLI 与 `cargo-osrun` 已先创建 `Invocation`，再创建兼容 `Tool` 门面。`InvocationState` / `ActiveBuildContext` 已在 #115 中接入 build/runtime 生产路径。 |
 | R1c variable/process functions | 已完成（#108 范围） | 变量替换、path expansion、command 构造和 shell hook 已从 `Tool` 逻辑抽到 project/process helper；build、QEMU、U-Boot、board config 等调用点已通过兼容 `Tool` 取得 `VariableScope` / `ProcessContext`。 |
 | R1d resolved Cargo artifact seam | 已完成（#111 已合入） | `artifact_selector.rs` 已承载 Cargo JSON executable selection 并覆盖 explicit bin、package-name binary、`default-run`、single binary 和 ambiguity error；`CargoBuildPipeline::execute()` 返回 `CargoBuildOutcome`，且测试证明 pipeline 不直接写旧 `Tool.ctx.artifacts`。 |
-| R1e runtime artifact preparer | 兼容切片已完成；完整目标未完成（#111 已合入） | `artifact/runtime.rs`、`RuntimeArtifactOptions`、`PreparedRuntimeArtifacts` 和 `prepare_runtime_artifacts()` 已落地。Cargo outcome 和 custom ELF path 都通过 orchestration/compat bridge 准备 runtime artifact。但 `OutputArtifacts` 仍在 `ctx.rs`，runner 仍从 `Tool.ctx.artifacts` 读取，`InvocationState` 未成为生产主路径。 |
-| R1f build config loader/menu hooks | 未完成 | build config loading、menu hooks 和 orchestration 仍未迁出 legacy `Tool` 主路径。 |
+| R1e runtime artifact preparer | 已完成当前上游友好目标（#111/#114/#115） | `artifact/runtime.rs`、`RuntimeArtifactOptions`、`PreparedRuntimeArtifacts`、`prepare_runtime_artifacts()` 和 `artifact/state.rs::OutputArtifacts` 已落地。Cargo outcome 和 custom ELF path 都通过 orchestration/compat bridge 准备 runtime artifact；`PreparedRuntimeArtifacts` 先写入 `InvocationState`，再同步旧 `Tool.ctx.artifacts`。`ctx.rs` re-export 保留为兼容 API。 |
+| R1f build config loader/menu hooks | 已完成当前上游友好目标（#114/#115） | `build/config_loader.rs` 和 `build/config_hooks.rs` 已落地，`Tool::prepare_build_config()` 已委托 loader，menu hooks 已迁出 `Tool`。CLI override 后会创建 `ActiveBuildContext`；Cargo/custom build orchestration 通过 `InvocationState` 记录 active build 和 runtime artifacts。`Tool` 仍保留为 public compatibility facade。 |
 | R1g runner/board entrypoints | 未完成 | QEMU、U-Boot、board 仍保留跨模块 `impl Tool`。 |
 | R1h remove `Tool` / `ctx` | 未开始 | 上游友好模式下暂不默认执行；除非另起 fork-side reset 或上游明确接受 API break。 |
-| R1i final verification/docs | 部分完成 | #108/#111 均有上游 PR 级验证记录；2026-05-26 本地复核运行 `docker exec -w /workspace/GitHub/MRNIU/ostool devbox cargo test -p ostool --lib -- --nocapture`，147 个库测试通过。完整 R1 终态验证尚未发生。 |
+| R1i final verification/docs | 部分完成 | #108/#111/#114/#115 均已合入上游；#115 实现分支曾运行 CI 同形态命令：`cargo fmt --all -- --check`、`cargo clippy --target x86_64-unknown-linux-gnu --all-features`、`cargo build --target x86_64-unknown-linux-gnu --all-features`、`cargo test --target x86_64-unknown-linux-gnu -- --nocapture`。完整 R1 终态验证尚未发生。 |
 
 下方 R1a-R1i 任务清单保留为完整 R1 终态 checklist。因为 #108 采用了更小的上游友好实现形态，
 没有逐项机械勾选所有原始 checkbox；当前完成状态以上表和各任务的“实现校准”说明为准。
@@ -535,7 +543,7 @@ R1 按 R1a-R1i 保守切片执行。切片编号是执行顺序，不改变最�
 下一步建议不要继续把所有剩余项都塞进 R1e。更合适的是先按实际消费者拆成小切片：
 
 - 若目标是继续 R1 cleanup：先收敛 runner/board entrypoints，让 QEMU、U-Boot、board 逐步接收
-  prepared runtime artifact 或更窄的 artifact state，而不是直接读完整 `Tool.ctx.artifacts`。
+  prepared runtime artifact 或更窄的 artifact state，而不是继续依赖 `Tool` 兼容门面。
 - 若目标是进入下一项用户价值：可以开始 PR-03 debug artifact pipeline，但必须把 debug artifact
   registry / object tools 边界作为 R2 的窄切片处理，避免重新扩大 R1。
 - 精简或真正接线尚未消费的中间模型，避免 `InvocationState` 或 `ActiveBuildContext` 在没有消费者时回流成空壳抽象。
@@ -696,19 +704,22 @@ R1d 后续约束：
 
 ### 任务 5 / R1e：抽出 RuntimeArtifactPreparer
 
-2026-05-26 实现校准：R1e 的上游友好兼容切片已通过 #111 合入，但它不是本文最初设想的完整
-R1E 终态。当前实际代码是：
+2026-05-29 实现校准：R1e 的上游友好兼容切片已通过 #111/#114 合入；#115 继续完成
+runtime artifact state 接线。当前实际代码是：
 
 - `artifact/runtime.rs` 已存在，提供 `RuntimeArtifactOptions`、`PreparedRuntimeArtifacts` 和
   `prepare_runtime_artifacts()` module function；没有创建无状态 `RuntimeArtifactPreparer` struct。
+- `artifact/state.rs` 已存在并持有 `OutputArtifacts`；`ctx.rs` 通过 `pub use crate::artifact::state::OutputArtifacts`
+  保持兼容导出。
 - `prepare_runtime_artifacts()` 已接管 ELF canonicalization、arch detection、stripped runtime `.elf`
   和 optional `.bin` 生成。
 - Cargo path：`build/mod.rs::apply_cargo_build_outcome()` 从 `CargoBuildOutcome` 读取
-  `ResolvedCargoArtifact`，调用 runtime helper，再通过 `Tool::apply_prepared_runtime_artifacts()` 写回旧
-  `Tool.ctx.artifacts`。
-- Custom / `cargo-osrun` path：`Tool::prepare_elf_artifact()` 调用 runtime helper，再写回旧 artifact state。
-- Runner path：QEMU、U-Boot、board 仍通过 `Tool.ctx.artifacts` 和 `Tool::objcopy_output_bin()` 取 runner
-  artifact；尚未直接接收 `PreparedRuntimeArtifacts`。
+  `ResolvedCargoArtifact`，调用 runtime helper，再通过 `Tool::apply_prepared_runtime_artifacts()` 写入
+  `InvocationState` 并同步旧 `Tool.ctx.artifacts`。
+- Custom / `cargo-osrun` path：`Tool::prepare_elf_artifact()` 调用 runtime helper，再写入 `InvocationState`
+  并同步旧 artifact state。
+- Runner path：QEMU、U-Boot、board 仍通过 `Tool` 兼容门面取 artifact；`Tool::runtime_artifacts()` 生产路径
+  优先读取 `InvocationState.artifacts`，旧 `Tool.ctx.artifacts` 作为兼容 fallback。
 
 本节下方 checkbox 按“当前兼容切片”重新标注。未完成项不阻塞 PR-03，但应在 R2 或后续 R1 cleanup
 中单独处理。
@@ -727,36 +738,35 @@ R1E 终态。当前实际代码是：
 
 步骤：
 
-- [ ] 把 `OutputArtifacts` 移到 `artifact/state.rs`。
+- [x] 把 `OutputArtifacts` 移到 `artifact/state.rs`，并通过 `ctx.rs` re-export 保持兼容。
 - [x] 定义 `PreparedRuntimeArtifacts`，保存 R1 仍需的旧字段语义。
 - [x] 把 ELF canonicalization 和 arch detection 移到 runtime artifact helper。
 - [x] 把 stripped `.elf` 和 optional `.bin` 生成移到 runtime artifact helper。
 - [x] 只有 helper 需要持有 options、process context 或 cache 时，才保留 `RuntimeArtifactPreparer` struct；否则使用 module function。
 - [x] 支持从 `CargoBuildOutcome` 准备 runtime artifact。
 - [x] 支持从 custom ELF path 准备 runtime artifact。
-- [ ] 部分完成：替换 `Tool::prepare_elf_artifact`、`Tool::set_elf_artifact_path`、`Tool::objcopy_elf`、`Tool::objcopy_output_bin` call sites。
+- [x] 兼容完成：替换 `Tool::prepare_elf_artifact`、`Tool::set_elf_artifact_path`、`Tool::objcopy_elf`、`Tool::objcopy_output_bin` call sites。
   当前 `Tool::prepare_elf_artifact` 和 `Tool::objcopy_output_bin` 仍作为兼容门面存在，但内部已委托给
-  `prepare_runtime_artifacts()`；`set_elf_artifact_path` / `objcopy_elf` 旧形态已不在当前代码中。
-- [ ] 保持当前 artifact 字段和更新行为：
+  `prepare_runtime_artifacts()` 并写入 `InvocationState`；`set_elf_artifact_path` / `objcopy_elf` 旧形态已不在当前代码中。
+- [x] 保持当前 artifact 字段和更新行为：
   - `elf`
   - `bin`
   - `cargo_artifact_dir`
   - `runtime_artifact_dir`
-- [ ] orchestration 层把 `PreparedRuntimeArtifacts` 写入 `InvocationState`。
+- [x] orchestration 层把 `PreparedRuntimeArtifacts` 写入 `InvocationState`。
 - [x] Run artifact unit tests。
-- [ ] Run `cargo check -p ostool`。
+- [x] Run `cargo check -p ostool`：2026-05-27 已运行
+  `docker exec -w /workspace/GitHub/MRNIU/ostool devbox cargo check -p ostool`。
 
 R1e 剩余工作：
 
-- 决定是否仍需要 `artifact/state.rs`。如果继续 upstream-friendly mode，短期可以保留 `ctx::OutputArtifacts`
-  作为兼容桥接；真正迁移应与 R2 artifact lifecycle 一起做，而不是只为移动文件改 public API。
+- `artifact/state.rs` 已存在；剩余问题不是是否创建文件或是否写入 `InvocationState`，而是何时把
+  `ctx::OutputArtifacts` re-export 和 `Tool.ctx.artifacts` 兼容桥接收掉。真正迁移应与 R2 artifact lifecycle
+  一起做，而不是只为移动文件改 public API。
 - 让 QEMU、U-Boot、board runner 的最小内部 seam 接收 prepared runtime artifact 或窄 artifact state，
-  逐步减少对 `Tool.ctx.artifacts` 的直接读取。
-- 如果恢复 `InvocationState`，必须先定义真实消费者和写入边界；不要只为了匹配旧计划创建未消费的状态对象。
+  逐步减少对 `Tool` 兼容门面的读取。
 - 在 PR-03 前补一个窄的 artifact state / debug artifact registry 设计，明确 runtime `.bin` 与
   future debug artifacts 的字段和路径语义。
-- 需要补 `cargo check -p ostool` 或等价 CI 检查；2026-05-26 仅复核运行了
-  `cargo test -p ostool --lib -- --nocapture`。
 
 审查重点：
 
@@ -770,6 +780,12 @@ R1e 剩余工作：
 
 ### 任务 6 / R1f：重接 CLI/build 调用边界，并替换 build config loading 和 menu hooks
 
+2026-05-29 实现校准：#114 已完成 R1f 的一部分前置拆分；#115 继续完成 active build
+和 invocation state 接线。当前 `main.rs` 和 `cargo-osrun` 已先创建 `Invocation`，随后创建兼容 `Tool`；
+build config loading 已进入 `config_loader`，`.build.toml` 的 package/features/target menu hooks 已进入
+`config_hooks`。CLI override 后的最终 build state 通过 `ActiveBuildContext` 表示，custom/Cargo build
+orchestration 会写入 `InvocationState`，旧 `AppContext` 只作为兼容镜像保留。
+
 **文件：**
 
 - Create: `ostool/src/build/config_loader.rs`
@@ -780,16 +796,18 @@ R1e 剩余工作：
 
 步骤：
 
-- [ ] `main.rs` 和 `cargo-osrun` 开始创建 `Invocation`。
-- [ ] build path 从 `Invocation` / `ActiveBuildContext` / helper functions 接线，不再通过 `Tool` 作为业务中心。
-- [ ] custom build 和 Cargo build 都通过 orchestration 层更新 `InvocationState`。
-- [ ] 把 build config path resolution 和 `jkconfig::run` 用法移到 `BuildConfigLoader` 或 module functions。
-- [ ] 把 package/features/target hooks 移到 `config_hooks.rs`。
-- [ ] loader 在 CLI override 后创建 `ActiveBuildContext`。
-- [ ] relative `extra_config` 仍按 build config path parent 解析。
-- [ ] menuconfig 保持现有 hooks 行为，不顺手重写交互逻辑。
-- [ ] Run config/menu hooks 相关 tests。
-- [ ] Run `cargo check -p ostool`。
+- [x] `main.rs` 和 `cargo-osrun` 开始创建 `Invocation`。
+- [x] build path 从 `Invocation` / `ActiveBuildContext` / helper functions 接线，不再通过 `Tool` 作为业务状态中心。
+- [x] custom build 和 Cargo build 都通过 orchestration 层更新 `InvocationState`。
+- [x] 把 build config path resolution 和 `jkconfig::run` 用法移到 `BuildConfigLoader` 或 module functions。
+- [x] 把 package/features/target hooks 移到 `config_hooks.rs`。
+- [x] loader 在 CLI override 后创建 `ActiveBuildContext`。
+- [x] relative `extra_config` 仍按 build config path parent 解析。
+- [x] menuconfig 保持现有 hooks 行为，不顺手重写交互逻辑。
+- [x] Run config/menu hooks 相关 tests：2026-05-27 已运行
+  `docker exec -w /workspace/GitHub/MRNIU/ostool devbox cargo test -p ostool --lib -- --nocapture`。
+- [x] Run `cargo check -p ostool`：2026-05-27 已运行
+  `docker exec -w /workspace/GitHub/MRNIU/ostool devbox cargo check -p ostool`。
 
 审查重点：
 
@@ -800,6 +818,11 @@ R1e 剩余工作：
 - `Tool` 如果还存在，只能作为旧 API 兼容门面，不再是 CLI 主路径。
 
 ### 任务 7 / R1g：围绕显式输入重写 runner 和 board entrypoints
+
+2026-05-27 实现校准：当前尚不具备直接执行完整 R1g 的干净前置状态。QEMU、U-Boot、board
+仍有跨模块 `impl Tool`，`QemuRunner` / U-Boot `Runner` 仍持有或接收 `Tool`，board run 仍通过
+`Tool::run_board()` 准备 runtime artifact 并调用 remote U-Boot path。可以先做 R1g 的窄前置 seam，
+但不应跳过 R1f 后半段直接做完整 runner/board rewrite。
 
 **文件：**
 
@@ -1048,17 +1071,24 @@ git switch -c feature/invocation-architecture
 
 ## 12. 完成判据
 
-### 12.1 当前上游检查点：#108 / #111
+### 12.1 当前上游检查点：#108 / #111 / #114 / #115
 
 #108 只能标记为 “R1 upstream-friendly seed 已合入”。#111 在此基础上合入了 R1d/R1e 的兼容切片。
-它们共同满足：
+#114 进一步收敛了 artifact state、build config loader 和 menu hooks。#115 继续把
+`InvocationState` / `ActiveBuildContext` 接入生产路径。它们共同满足：
 
 - invocation/project/process 的初始边界已经进入上游。
 - Cargo executable selection 已从 build pipeline 中拆出。
 - `CargoBuildPipeline::execute()` 返回 `CargoBuildOutcome`，不直接写旧 artifact state。
+- `CargoBuildPipeline` 不再持有 `&mut Tool`，而是接收显式 `CargoBuildInput`。
 - runtime artifact preparation 已从 Cargo pipeline /旧 objcopy 流程中拆到 `artifact/runtime.rs`。
+- `OutputArtifacts` 已迁入 `artifact/state.rs`，并由 `InvocationState` 持有；`ctx.rs` 仍 re-export
+  兼容 API。
+- `.build.toml` loader 和 menu hooks 已进入 `build/config_loader.rs` / `build/config_hooks.rs`。
+- CLI override 后的 build state 通过 `ActiveBuildContext` 表示，`VariableScope` 优先从 active build 派生。
+- `PreparedRuntimeArtifacts` 写入 `InvocationState`，再同步旧 `AppContext`。
 - CLI/config/runtime 行为按 PR 验证保持兼容。
-- `Tool` 继续作为兼容门面和 runtime artifact state owner。
+- `Tool` 继续作为兼容门面，但不再是唯一 runtime artifact state owner。
 
 它不满足下面的完整 R1 完成判据。
 

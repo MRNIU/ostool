@@ -18,12 +18,13 @@
 - 用 OSTool 的 `Custom` 构建直接调用 SimpleKernel `xtask` 可以作为临时过渡，但不算
   真正替换工具链。
 
-2026-05-26 现状校准：
+2026-05-29 现状校准：
 
-- 上游 #108/#111 已完成 R1 的上游友好切片：invocation/project/process seed、Cargo executable
-  artifact selection、`CargoBuildOutcome` 和 runtime artifact helper 已进入主路径。
+- 上游 #108/#111/#114/#115 已完成 R1 的上游友好切片：invocation/project/process seed、Cargo executable
+  artifact selection、`CargoBuildOutcome`、runtime artifact helper、build config loader/menu hooks 和
+  invocation runtime state 已进入主路径。
 - R1 完整终态未完成：`Tool` / `ctx::OutputArtifacts` 仍是兼容桥接，QEMU/U-Boot/board runner
-  仍从 `Tool.ctx.artifacts` 读取 runner artifact。
+  仍通过 `Tool` 兼容门面读取 runner artifact。
 - R2 尚未完成：还没有 debug artifact registry / object tools 边界；因此 PR-03 可以作为下一项用户价值
   开始设计，但实现前应先做一个窄的 R2 artifact/object-tools 切片，避免把 `.disassembly` /
   `.elf_info` 混入 runtime `.bin` 语义。
@@ -38,7 +39,7 @@
 | 1 | 固定 nightly 工具链、`-Z build-std`、`riscv64gc-unknown-none-elf` 和 `aarch64-unknown-none` 双架构构建 | 部分支持。`Cargo` build 可以传 `target`、`args`、`env`，但 profile/debug/release 语义和 QEMU debug 绑定在一起 | 独立的 Cargo profile/release 配置，避免 `ostool build` 总是按运行调试模式推导 | PR-01 |
 | 2 | `cargo xtask build/check` 分架构运行，CI 中还有 fmt、clippy、host test、deny | `build` 相关能力由 OSTool 覆盖；`check`、`clippy`、`fmt`、`deny`、host test 属于通用质量门禁，不纳入 OSTool 启动链 | SimpleKernel 侧继续在 CI/xtask 中直接调用 Cargo 或专用工具 | PR-09、PR-10 |
 | 3 | 测试 crate 通过 `[[bin]]` 自动发现，每个 test binary 可单独构建运行 | 不足。OSTool 主要按 package/default_run/最后一个 bin 推导 artifact，缺少显式 `--bin` 选择 | Cargo bin selector：支持 `package`/`bin` 精确选择可运行 binary artifact | PR-02 |
-| 4 | 每次构建后生成 `.objdump`、`.readelf`、`.nm`、`.bin` 等调试产物 | 部分支持。OSTool 已有 runtime ELF/BIN helper 和 Cargo outcome 边界，但还没有 debug artifact registry / object tools 边界；`.bin` 仍只表示 runner-consumable raw binary | Debug artifact pipeline：先补窄 R2 artifact/object-tools 边界，再默认生成调试产物 | PR-03 |
+| 4 | 每次构建后生成 `.objdump`、`.readelf`、`.nm`、`.bin` 等调试产物 | 部分支持。OSTool 已有 Cargo outcome、runtime ELF/BIN helper 和 runtime artifact state 边界，但还没有 debug artifact registry / object tools 边界；`.bin` 仍只表示 runner-consumable raw binary | Debug artifact pipeline：先补窄 R2 artifact/object-tools 边界，再默认生成调试产物 | PR-03 |
 | 5 | RISC-V 固件链：OpenSBI + U-Boot SPL + `u-boot.itb` | 不支持。OSTool 当前没有固件 recipe 管理 | Firmware recipe executor：声明式 prebuilt/build 命令、产物路径、缺失时构建 | PR-06 |
 | 6 | AArch64 固件链：U-Boot + OP-TEE + Arm Trusted Firmware `flash.bin` | 不支持。同 PR-06 | 同上，需要能表达多步骤依赖和架构分支 | PR-06 |
 | 7 | QEMU 不是简单 `-kernel`，而是按架构通过 U-Boot/ATF/SPL 引导 | 部分支持。OSTool QEMU runner 会自动追加 `-kernel`，还缺少“不自动 kernel”的 boot profile | QEMU boot profile：允许关闭自动 `-kernel`，配置 `-bios`、loader、drive、monitor、log、TFTP 等 | PR-07 |
@@ -219,9 +220,9 @@ graph TD
 
 ### A. 构建能力可用
 
-完成 PR-01、PR-02、R1d/R1e 兼容切片、R2 窄 artifact/object-tools 边界和 PR-03 后，
-OSTool 应能覆盖 SimpleKernel 的可运行 artifact 构建和调试产物生成。R1d/R1e 已把 Cargo outcome
-和 runtime artifact preparation 从旧 build pipeline 中拆出；R2 仍需要补 debug artifact registry
+完成 PR-01、PR-02、R1 上游友好兼容切片、R2 窄 artifact/object-tools 边界和 PR-03 后，
+OSTool 应能覆盖 SimpleKernel 的可运行 artifact 构建和调试产物生成。R1 已把 Cargo outcome、
+runtime artifact preparation 和 runtime artifact state 从旧 build pipeline 中拆出；R2 仍需要补 debug artifact registry
 和 object-tools 边界，避免 PR-03 把新的 debug artifact 逻辑继续塞进 runtime `.bin` 或 runner 路径。
 `check/clippy/fmt/deny/host test` 不进入 OSTool，继续由 SimpleKernel CI/xtask 直接调用。
 这个阶段不要改 SimpleKernel 默认 CI，只做本地或实验性配置验证。

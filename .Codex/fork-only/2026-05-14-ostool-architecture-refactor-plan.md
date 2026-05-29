@@ -42,9 +42,9 @@ README、配置示例、解析提示或 warning 说明，不要静默改变含�
 架构重构的阻塞约束。真正向上游提交 PR 前，只需要检查 `git status`、`git diff upstream/main...HEAD`
 和 staged diff，确保本地计划、`AGENTS.md`、临时记录等无关 fork 侧资料没有混入上游 PR。
 
-## 2026-05-26 代码现状
+## 2026-05-29 代码现状
 
-当前 `main` 已包含上游 #108 和 #111。实际代码状态如下：
+当前 `main` 已包含上游 #108、#111、#114 和 #115。实际代码状态如下：
 
 - R1 已完成上游友好的 seed：`InvocationOptions` / `Invocation`、`ProjectLayout`、`VariableScope` 和
   `ProcessContext` 已进入主路径，但 CLI 和 `cargo-osrun` 创建 `Invocation` 后仍转换成兼容 `Tool` 门面。
@@ -52,14 +52,17 @@ README、配置示例、解析提示或 warning 说明，不要静默改变含�
   `artifact_selector.rs`，build pipeline 不直接写旧 artifact state。
 - R1e 兼容切片已完成：runtime ELF/BIN preparation 已在 `artifact/runtime.rs` 中独立实现，
   `build/mod.rs` 的 orchestration 层消费 `CargoBuildOutcome` 后调用 runtime helper。
+- R1f 当前上游友好目标已完成：`build/config_loader.rs`、`build/config_hooks.rs` 和
+  `ActiveBuildContext` / `InvocationState` 生产接线已进入 `main`。
 - 完整 R1 终态未完成：`Tool`、`ToolConfig`、`ManifestContext`、`AppContext`、`ctx::OutputArtifacts` 仍是
-  兼容主路径；QEMU、U-Boot、board runner 仍从 `Tool.ctx.artifacts` 读取 runner artifact。
-- R2 尚未完成：`OutputArtifacts` 仍只有 runtime/cargo 路径字段，尚无 debug artifact registry；
+  兼容 API；QEMU、U-Boot、board runner 仍通过 `Tool` 兼容门面读取 runner artifact。
+- R2 尚未完成：`OutputArtifacts` 已迁入 `artifact/state.rs`，但仍只有 runtime/cargo 路径字段，
+  尚无 debug artifact registry；
   someboot 注入责任也尚未在最终 build plan 中收敛。
 
 因此，后续不应继续把所有剩余目标都塞回 R1e。若要进入 PR-03，需要先做一个窄的 R2 artifact
-lifecycle / object tools 边界；若要继续 R1，则应聚焦 runner/board entrypoint 从 `Tool.ctx.artifacts`
-迁出，而不是重做已合入的 runtime helper。
+lifecycle / object tools 边界；若要继续 R1，则应聚焦 runner/board entrypoint 从 `Tool` 兼容门面
+迁出，而不是重做已合入的 invocation/build/runtime helper。
 
 ## 阶段文档索引
 
@@ -77,7 +80,7 @@ lifecycle / object tools 边界；若要继续 R1，则应聚焦 runner/board en
 | 编号 | 位置 | 问题 | 影响 | 先修动作 |
 |---|---|---|---|---|
 | A1 | `ostool/src/tool.rs`、跨模块 `impl Tool` | `Tool` 同时承担项目布局、调用选项、运行态状态、命令执行、artifact、build config、变量替换、menuconfig hooks 和 runner 门面 | 后续 debug artifacts、object tools、boot artifacts 继续加入会让 `Tool` 成为不可控业务中心；单纯拆文件无法解决语义塌缩 | R1 |
-| A2 | `ostool/src/ctx.rs`、`ostool/src/artifact/runtime.rs` | runtime artifact preparation 已拆出，但 `OutputArtifacts` 仍只有 `elf`、`bin`、`cargo_artifact_dir`、`runtime_artifact_dir`，没有 debug artifact registry | PR-03 容易把 `.disassembly/.elf_info/.nm` 混进 runtime `.bin` 语义 | R2 |
+| A2 | `ostool/src/artifact/state.rs`、`ostool/src/artifact/runtime.rs` | runtime artifact preparation 和 runtime artifact state 已拆出，但 `OutputArtifacts` 仍只有 `elf`、`bin`、`cargo_artifact_dir`、`runtime_artifact_dir`，没有 debug artifact registry | PR-03 容易把 `.disassembly/.elf_info/.nm` 混进 runtime `.bin` 语义 | R2 |
 | A3 | `ostool/src/tool.rs` 与 `ostool/src/build/cargo_pipeline.rs` | someboot 自动参数在 build config 准备和 Cargo command 构造阶段都有注入入口 | 责任边界不清，未来引入 build plan 后容易重复追加参数 | R2 |
 | A4 | `ostool/src/build/cargo_pipeline.rs`、`ostool/src/build/mod.rs` | Cargo outcome 与 runtime artifact preparation 已拆开；post-build hook 仍在 build orchestration 中，debug artifact hook 尚无独立阶段 | PR-03 需要明确 debug artifact 生成挂在哪里，避免重新塞回 runtime `.bin` 或 runner 路径 | R2 |
 | A5 | `ostool/src/run/uboot.rs` | FIT image 生成嵌在 U-Boot runner 内，并带有 Linux/raw-bin 默认假设 | SimpleKernel 需要 `os = "elf"`、ELF 输入、架构化 load/entry/FDT 配置，不能只靠 runner 内部逻辑扩展 | R3 |
@@ -177,8 +180,9 @@ R1 的完整目标模型：
 
 验收：
 
-- 上游友好检查点：#108/#111 已让 invocation/project/process、Cargo outcome、runtime artifact helper 进入主路径，
-  但仍保留 `Tool` / `ctx` 兼容桥接。
+- 上游友好检查点：#108/#111/#114/#115 已让 invocation/project/process、Cargo outcome、runtime artifact
+  helper、build config loader/menu hooks 和 invocation runtime state 进入主路径，但仍保留 `Tool` / `ctx`
+  兼容桥接。
 - 完整终态：`Tool`、`ToolConfig`、`ManifestContext`、`AppContext` 不再是核心模型名。
 - `OutputArtifacts` / `ostool::ctx` 的 Rust API 破坏边界被明确记录，除非后续为了上游兼容保留 re-export。
 - 不再有跨模块 `impl Tool`。
@@ -193,10 +197,11 @@ R1 的完整目标模型：
 
 目标：把产物状态从“几个路径字段”升级为清晰生命周期，但仍不新增用户可见 debug artifact feature。
 
-2026-05-26 现状校准：#111 已完成 R2 的一部分前置条件，即 Cargo executable artifact 和 runtime
-runner artifact 已经通过 `CargoBuildOutcome` / `PreparedRuntimeArtifacts` 分离。但 R2 本身尚未完成，
-因为 `OutputArtifacts` 还没有 debug artifact registry，runner 仍从兼容 `Tool.ctx.artifacts` 读取，
-someboot 注入责任也还没有收敛到最终 build plan。
+2026-05-29 现状校准：#111/#114/#115 已完成 R2 的一部分前置条件，即 Cargo executable artifact、
+runtime runner artifact 和 runtime artifact state 已经通过 `CargoBuildOutcome` /
+`PreparedRuntimeArtifacts` / `OutputArtifacts` 分离。但 R2 本身尚未完成，因为 `OutputArtifacts`
+还没有 debug artifact registry，runner 仍通过兼容 `Tool` 门面读取 artifact，someboot 注入责任也
+还没有收敛到最终 build plan。
 
 建议修改：
 

@@ -138,8 +138,6 @@ impl QemuConfig {
 pub struct RunQemuOptions {
     /// Whether to dump the device tree blob.
     pub dtb_dump: bool,
-    /// Whether to show QEMU output.
-    pub show_output: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -197,9 +195,12 @@ pub async fn read_config_from_path(
 }
 
 /// Reads a QEMU configuration using the Cargo package variable scope.
+///
+/// `build_config_path` is the optional `.build.toml` source path for `cargo`.
 pub async fn read_config_from_path_for_cargo(
     invocation: &mut Invocation,
     cargo: &Cargo,
+    build_config_path: Option<&Path>,
     path: &Path,
 ) -> anyhow::Result<QemuConfig> {
     crate::build::activate_build_config(
@@ -207,6 +208,7 @@ pub async fn read_config_from_path_for_cargo(
         &crate::build::config::BuildConfig {
             system: crate::build::config::BuildSystem::Cargo(cargo.clone()),
         },
+        build_config_path,
     )?;
     read_config_from_path(invocation, path).await
 }
@@ -233,15 +235,19 @@ pub(crate) async fn ensure_qemu_config_for_cargo(
 }
 
 /// Loads or creates a QEMU configuration using the Cargo package directory.
-pub async fn ensure_qemu_config_for_cargo_invocation(
+///
+/// `build_config_path` is the optional `.build.toml` source path for `cargo`.
+pub async fn ensure_config_for_cargo(
     invocation: &mut Invocation,
     cargo: &Cargo,
+    build_config_path: Option<&Path>,
 ) -> anyhow::Result<QemuConfig> {
     crate::build::activate_build_config(
         invocation,
         &crate::build::config::BuildConfig {
             system: crate::build::config::BuildSystem::Cargo(cargo.clone()),
         },
+        build_config_path,
     )?;
     let scope = invocation.variable_scope()?;
     ensure_qemu_config_for_cargo(
@@ -825,10 +831,9 @@ where
 mod tests {
     use super::{
         QemuConfig, QemuRunInput, QemuRunner, RunQemuOptions, build_default_qemu_config,
-        default_qemu_config_for_cargo, ensure_qemu_config_at_path,
-        ensure_qemu_config_for_cargo_invocation, infer_target_arch, read_config_from_path,
-        read_qemu_config_at_path, resolve_qemu_config_path_in_dir, run_qemu_with_config,
-        timeout_duration,
+        default_qemu_config_for_cargo, ensure_config_for_cargo, ensure_qemu_config_at_path,
+        infer_target_arch, read_config_from_path, read_qemu_config_at_path,
+        resolve_qemu_config_path_in_dir, run_qemu_with_config, timeout_duration,
     };
     use object::Architecture;
     use std::{
@@ -1011,7 +1016,7 @@ fail_regex = []
         let mut invocation =
             Invocation::new(InvocationOptions::new(Some(app_dir), None, None, false)).unwrap();
 
-        let config = ensure_qemu_config_for_cargo_invocation(
+        let config = ensure_config_for_cargo(
             &mut invocation,
             &Cargo {
                 env: HashMap::new(),
@@ -1028,6 +1033,7 @@ fail_regex = []
                 post_build_cmds: vec![],
                 to_bin: false,
             },
+            None,
         )
         .await
         .unwrap();
@@ -1292,6 +1298,7 @@ timeout = 0
                     to_bin: false,
                 }),
             },
+            None,
         )
         .unwrap();
         unsafe {

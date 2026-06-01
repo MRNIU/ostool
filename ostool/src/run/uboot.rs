@@ -301,11 +301,6 @@ impl Net {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct RunUbootOptions {
-    pub show_output: bool,
-}
-
 #[derive(Clone, Debug)]
 pub(crate) struct UbootRunInput {
     process_context: ProcessContext,
@@ -353,9 +348,12 @@ pub async fn read_config_from_path(
 }
 
 /// Reads a U-Boot configuration using the Cargo package variable scope.
+///
+/// `build_config_path` is the optional `.build.toml` source path for `cargo`.
 pub async fn read_config_from_path_for_cargo(
     invocation: &mut Invocation,
     cargo: &crate::build::config::Cargo,
+    build_config_path: Option<&Path>,
     path: &Path,
 ) -> anyhow::Result<UbootConfig> {
     crate::build::activate_build_config(
@@ -363,6 +361,7 @@ pub async fn read_config_from_path_for_cargo(
         &crate::build::config::BuildConfig {
             system: crate::build::config::BuildSystem::Cargo(cargo.clone()),
         },
+        build_config_path,
     )?;
     read_config_from_path(invocation, path).await
 }
@@ -393,15 +392,19 @@ pub async fn ensure_config_in_dir(
 }
 
 /// Loads or creates a U-Boot configuration using the workspace directory.
-pub async fn ensure_uboot_config_for_cargo(
+///
+/// `build_config_path` is the optional `.build.toml` source path for `cargo`.
+pub async fn ensure_config_for_cargo(
     invocation: &mut Invocation,
     cargo: &crate::build::config::Cargo,
+    build_config_path: Option<&Path>,
 ) -> anyhow::Result<UbootConfig> {
     crate::build::activate_build_config(
         invocation,
         &crate::build::config::BuildConfig {
             system: crate::build::config::BuildSystem::Cargo(cargo.clone()),
         },
+        build_config_path,
     )?;
     ensure_config_in_dir(invocation, invocation.workspace_dir()).await
 }
@@ -419,24 +422,18 @@ pub(crate) fn prepare_uboot_runtime_config(
 pub(crate) async fn run_uboot_with_config(
     input: UbootRunInput,
     config: UbootConfig,
-    options: RunUbootOptions,
 ) -> anyhow::Result<()> {
-    let _ = options.show_output;
     let backend = LocalBackend::new(config.local.clone());
     let mut runner = Runner::new(input, config, backend);
     runner.run().await
 }
 
 /// Runs an already prepared artifact via U-Boot.
-pub async fn run_uboot(
-    invocation: &mut Invocation,
-    config: &UbootConfig,
-    options: RunUbootOptions,
-) -> anyhow::Result<()> {
+pub async fn run_uboot(invocation: &mut Invocation, config: &UbootConfig) -> anyhow::Result<()> {
     let scope = invocation.variable_scope()?;
     let config = prepare_uboot_runtime_config(&scope, config)?;
     let input = uboot_run_input(invocation)?;
-    run_uboot_with_config(input, config, options).await
+    run_uboot_with_config(input, config).await
 }
 
 pub(crate) fn uboot_run_input(invocation: &Invocation) -> anyhow::Result<UbootRunInput> {
@@ -1758,6 +1755,7 @@ timeout = 0
                     to_bin: false,
                 }),
             },
+            None,
         )
         .unwrap();
         unsafe {
@@ -1946,6 +1944,7 @@ baud_rate = "115200"
                     to_bin: false,
                 }),
             },
+            None,
         )
         .unwrap();
 

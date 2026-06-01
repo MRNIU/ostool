@@ -65,7 +65,6 @@ impl MenuConfigHandler {
     async fn handle_default_config(invocation: &mut Invocation) -> Result<()> {
         let config_path =
             config_loader::resolve_build_config_path(invocation.workspace_dir(), None);
-        invocation.set_build_config_path(Some(config_path.clone()));
 
         let hooks = config_hooks::build_config_hooks(invocation.workspace_dir());
         let config = jkconfig::run::<BuildConfig>(config_path.clone(), true, &hooks)

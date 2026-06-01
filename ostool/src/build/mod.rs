@@ -33,7 +33,7 @@ use crate::{
     project::{ProjectLayout, metadata, variables::VariableScope},
     run::{
         qemu::{QemuConfig, RunQemuOptions},
-        uboot::{RunUbootOptions, UbootConfig},
+        uboot::UbootConfig,
     },
 };
 
@@ -58,8 +58,6 @@ pub struct CargoQemuRunnerArgs {
     pub debug: bool,
     /// Whether to dump the device tree blob.
     pub dtb_dump: bool,
-    /// Whether to show QEMU output.
-    pub show_output: bool,
 }
 
 /// Parameters for running a built Cargo artifact on real hardware via U-Boot.
@@ -67,8 +65,6 @@ pub struct CargoQemuRunnerArgs {
 pub struct CargoUbootRunnerArgs {
     /// Optional fully prepared U-Boot runtime configuration.
     pub uboot: Option<UbootConfig>,
-    /// Whether to show U-Boot output.
-    pub show_output: bool,
 }
 
 /// Specifies the type of runner to use after building.
@@ -185,17 +181,19 @@ pub async fn load_build_config_from_path(
 }
 
 /// Records the selected build configuration as active for variable expansion.
+///
+/// Pass `Some(path)` when `config` was loaded from a build config file so
+/// relative Cargo extra config paths resolve against that file. Pass `None`
+/// for in-memory build configs.
 pub fn activate_build_config(
     invocation: &mut Invocation,
     config: &config::BuildConfig,
+    config_path: Option<&Path>,
 ) -> anyhow::Result<()> {
     let active = activate_build_context(
         invocation.project_layout(),
         config.clone(),
-        invocation
-            .state()
-            .build_config_path()
-            .map(std::path::Path::to_path_buf),
+        config_path.map(Path::to_path_buf),
         &CargoSelector::default(),
     )?;
     invocation.set_active_build(active);
@@ -217,22 +215,25 @@ async fn prepare_build_config(
     )
     .await?;
 
-    invocation.set_build_config_path(Some(loaded.path().to_path_buf()));
+    let config_path = loaded.path().to_path_buf();
     let config = loaded.into_config();
-    activate_build_config(invocation, &config)?;
+    activate_build_config(invocation, &config, Some(&config_path))?;
     Ok(config)
 }
 
 /// Builds the project using the specified build configuration.
+///
+/// `config_path` is the optional source path for `config`.
 pub async fn build_with_config(
     invocation: &mut Invocation,
     config: &config::BuildConfig,
+    config_path: Option<&Path>,
 ) -> anyhow::Result<()> {
-    activate_build_config(invocation, config)?;
+    activate_build_config(invocation, config, config_path)?;
     match &config.system {
         config::BuildSystem::Custom(custom) => build_custom(invocation, custom)?,
         config::BuildSystem::Cargo(cargo) => {
-            cargo_build(invocation, cargo).await?;
+            cargo_build(invocation, cargo, config_path).await?;
         }
     }
     Ok(())
@@ -246,12 +247,19 @@ pub(crate) fn build_custom(invocation: &mut Invocation, config: &Custom) -> anyh
 }
 
 /// Builds the project using Cargo.
-pub async fn cargo_build(invocation: &mut Invocation, config: &Cargo) -> anyhow::Result<()> {
+///
+/// `config_path` is the optional `.build.toml` source path for `config`.
+pub async fn cargo_build(
+    invocation: &mut Invocation,
+    config: &Cargo,
+    config_path: Option<&Path>,
+) -> anyhow::Result<()> {
     activate_build_config(
         invocation,
         &BuildConfig {
             system: BuildSystem::Cargo(config.clone()),
         },
+        config_path,
     )?;
     let debug = invocation.options().debug();
     let input = cargo_build_input(invocation, config, debug)?;
@@ -265,9 +273,10 @@ pub async fn cargo_build(invocation: &mut Invocation, config: &Cargo) -> anyhow:
 pub(crate) async fn prepare_runtime_artifacts(
     invocation: &mut Invocation,
     config: &config::BuildConfig,
+    config_path: Option<&Path>,
     debug: bool,
 ) -> anyhow::Result<()> {
-    activate_build_config(invocation, config)?;
+    activate_build_config(invocation, config, config_path)?;
     match &config.system {
         config::BuildSystem::Custom(custom) => {
             prepare_custom_runtime_artifacts(invocation, custom).await
@@ -305,9 +314,12 @@ async fn prepare_cargo_runtime_artifacts(
 }
 
 /// Builds and runs the project using Cargo with the specified runner.
+///
+/// `config_path` is the optional `.build.toml` source path for `config`.
 pub async fn cargo_run(
     invocation: &mut Invocation,
     config: &Cargo,
+    config_path: Option<&Path>,
     runner: &CargoRunnerKind,
 ) -> anyhow::Result<()> {
     activate_build_config(
@@ -315,6 +327,7 @@ pub async fn cargo_run(
         &BuildConfig {
             system: BuildSystem::Cargo(config.clone()),
         },
+        config_path,
     )?;
 
     let debug = matches!(runner, CargoRunnerKind::Qemu(args) if args.debug);
@@ -332,7 +345,7 @@ pub async fn cargo_run(
             let qemu = match &args.qemu {
                 Some(config) => config.clone(),
                 None => {
-                    crate::run::qemu::ensure_qemu_config_for_cargo_invocation(invocation, config)
+                    crate::run::qemu::ensure_config_for_cargo(invocation, config, config_path)
                         .await?
                 }
             };
@@ -341,7 +354,6 @@ pub async fn cargo_run(
                 &qemu,
                 RunQemuOptions {
                     dtb_dump: args.dtb_dump,
-                    show_output: args.show_output,
                 },
                 debug,
             )
@@ -351,17 +363,11 @@ pub async fn cargo_run(
             let uboot = match &args.uboot {
                 Some(config) => config.clone(),
                 None => {
-                    crate::run::uboot::ensure_uboot_config_for_cargo(invocation, config).await?
+                    crate::run::uboot::ensure_config_for_cargo(invocation, config, config_path)
+                        .await?
                 }
             };
-            crate::run::uboot::run_uboot(
-                invocation,
-                &uboot,
-                RunUbootOptions {
-                    show_output: args.show_output,
-                },
-            )
-            .await?;
+            crate::run::uboot::run_uboot(invocation, &uboot).await?;
         }
     }
 
@@ -433,7 +439,9 @@ mod tests {
         project::resolve_project_layout,
     };
 
-    use super::{CargoSelector, activate_build_context, apply_cargo_build_outcome};
+    use super::{
+        CargoSelector, activate_build_config, activate_build_context, apply_cargo_build_outcome,
+    };
 
     #[test]
     fn apply_cargo_build_outcome_records_runtime_artifact_state() {
@@ -522,6 +530,41 @@ mod tests {
         };
         assert_eq!(active.config_path(), Some(config_path.as_path()));
         assert_eq!(active.variable_scope().package_dir(), temp.path());
+    }
+
+    #[test]
+    fn activate_build_config_uses_explicit_path_and_clears_absent_path() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(
+            temp.path().join("Cargo.toml"),
+            "[package]\nname = \"kernel\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+        fs::create_dir_all(temp.path().join("src")).unwrap();
+        fs::write(temp.path().join("src/main.rs"), "fn main() {}\n").unwrap();
+        let mut invocation = Invocation::new(InvocationOptions::new(
+            Some(temp.path().to_path_buf()),
+            None,
+            None,
+            false,
+        ))
+        .unwrap();
+        let config = BuildConfig {
+            system: BuildSystem::Cargo(Cargo {
+                package: "kernel".into(),
+                ..Default::default()
+            }),
+        };
+        let config_path = temp.path().join(".build.toml");
+
+        activate_build_config(&mut invocation, &config, Some(&config_path)).unwrap();
+        assert_eq!(
+            invocation.state().build_config_path(),
+            Some(config_path.as_path())
+        );
+
+        activate_build_config(&mut invocation, &config, None).unwrap();
+        assert!(invocation.state().build_config_path().is_none());
     }
 
     #[test]

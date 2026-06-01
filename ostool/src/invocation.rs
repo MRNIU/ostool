@@ -100,7 +100,7 @@ impl Invocation {
     }
 
     /// Returns the resolved project layout for this invocation.
-    pub fn project_layout(&self) -> &ProjectLayout {
+    pub(crate) fn project_layout(&self) -> &ProjectLayout {
         &self.project_layout
     }
 
@@ -110,10 +110,6 @@ impl Invocation {
 
     pub(crate) fn set_active_build(&mut self, active_build: ActiveBuildContext) {
         self.state.set_active_build(active_build);
-    }
-
-    pub(crate) fn set_build_config_path(&mut self, path: Option<PathBuf>) {
-        self.state.set_build_config_path(path);
     }
 
     pub(crate) fn runtime_artifacts(&self) -> &OutputArtifacts {
@@ -233,7 +229,6 @@ impl Invocation {
 pub(crate) struct InvocationState {
     arch: Option<Architecture>,
     active_build: Option<ActiveBuildContext>,
-    build_config_path: Option<PathBuf>,
     artifacts: OutputArtifacts,
 }
 
@@ -250,18 +245,14 @@ impl InvocationState {
 
     /// Replaces the currently active build context.
     pub(crate) fn set_active_build(&mut self, active_build: ActiveBuildContext) {
-        self.build_config_path = active_build.config_path().map(PathBuf::from);
         self.active_build = Some(active_build);
     }
 
     /// Returns the path used to load the active build configuration.
     pub(crate) fn build_config_path(&self) -> Option<&Path> {
-        self.build_config_path.as_deref()
-    }
-
-    /// Records the path used to load the active build configuration.
-    pub(crate) fn set_build_config_path(&mut self, path: Option<PathBuf>) {
-        self.build_config_path = path;
+        self.active_build
+            .as_ref()
+            .and_then(ActiveBuildContext::config_path)
     }
 
     /// Returns prepared runtime artifacts.

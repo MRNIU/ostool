@@ -13,7 +13,7 @@ use log::debug;
 use ostool::{
     invocation::{Invocation, InvocationOptions},
     logger,
-    run::{qemu::RunQemuOptions, uboot::RunUbootOptions},
+    run::qemu::RunQemuOptions,
 };
 
 #[derive(Debug, Parser, Clone)]
@@ -115,7 +115,6 @@ async fn try_main() -> anyhow::Result<()> {
         elf,
         to_bin,
         config,
-        show_output,
         no_run,
         debug,
         command,
@@ -159,12 +158,7 @@ async fn try_main() -> anyhow::Result<()> {
                     ostool::run::uboot::ensure_config_in_dir(&invocation, &workspace_dir).await?
                 }
             };
-            ostool::run::uboot::run_uboot(
-                &mut invocation,
-                &config,
-                RunUbootOptions { show_output },
-            )
-            .await?;
+            ostool::run::uboot::run_uboot(&mut invocation, &config).await?;
         }
         None => {
             let config = match config.as_deref() {
@@ -174,15 +168,8 @@ async fn try_main() -> anyhow::Result<()> {
                     ostool::run::qemu::ensure_config_in_dir(&invocation, &workspace_dir).await?
                 }
             };
-            ostool::run::qemu::run_qemu(
-                &mut invocation,
-                &config,
-                RunQemuOptions {
-                    dtb_dump,
-                    show_output,
-                },
-            )
-            .await?;
+            ostool::run::qemu::run_qemu(&mut invocation, &config, RunQemuOptions { dtb_dump })
+                .await?;
         }
     }
 

@@ -7,7 +7,7 @@ use ostool::{
     invocation::{Invocation, InvocationOptions},
     run::{
         qemu::{QemuConfig, RunQemuOptions},
-        uboot::{RunUbootOptions, UbootConfig},
+        uboot::UbootConfig,
     },
 };
 
@@ -22,16 +22,13 @@ fn main() {
     let _ = ostool::run::qemu::default_config(&invocation);
     let uboot: UbootConfig = ostool::run::uboot::default_config();
     let _ = RunQemuOptions::default();
-    let _ = RunUbootOptions::default();
     let _ = board::RunBoardOptions::default();
     let _ = build::CargoRunnerKind::new_qemu(CargoQemuRunnerArgs {
         qemu: Some(qemu),
         debug: false,
         dtb_dump: false,
-        show_output: true,
     });
     let _ = CargoRunnerKind::new_uboot(CargoUbootRunnerArgs {
         uboot: Some(uboot),
-        show_output: true,
     });
 }

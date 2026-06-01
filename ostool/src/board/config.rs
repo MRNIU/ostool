@@ -416,6 +416,7 @@ dtb_file = "${package}/board.dtb"
                     to_bin: false,
                 }),
             },
+            None,
         )
         .unwrap();
 

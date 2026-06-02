@@ -824,8 +824,11 @@ mod tests {
     use tempfile::TempDir;
 
     use crate::{
-        artifact::runtime::{RuntimeArtifactOptions, prepare_runtime_artifacts},
-        artifact::state::OutputArtifacts,
+        artifact::{
+            object_tools::ObjectTools,
+            runtime::{RuntimeArtifactOptions, prepare_runtime_artifacts},
+            state::OutputArtifacts,
+        },
         build::{
             config::{BuildConfig, BuildSystem, Cargo},
             config_loader,
@@ -1039,7 +1042,7 @@ fail_regex = []
                 debug: false,
                 cargo_artifact_dir: None,
                 strip_elf: false,
-                objcopy_program: PathBuf::from("rust-objcopy"),
+                objcopy_program: ObjectTools.objcopy(),
             },
         )
         .unwrap();

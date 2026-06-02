@@ -22,6 +22,7 @@ use std::path::{Path, PathBuf};
 use anyhow::bail;
 
 use crate::{
+    artifact::object_tools::ObjectTools,
     artifact::runtime::{
         RuntimeArtifactOptions, prepare_runtime_artifacts as prepare_runtime_artifact_outputs,
     },
@@ -405,7 +406,7 @@ fn apply_cargo_build_outcome(
             debug,
             cargo_artifact_dir: Some(resolved.cargo_artifact_dir().to_path_buf()),
             strip_elf: false,
-            objcopy_program: PathBuf::from("rust-objcopy"),
+            objcopy_program: ObjectTools.objcopy(),
         },
     )?;
     invocation.apply_prepared_runtime_artifacts(prepared);
@@ -436,6 +437,7 @@ mod tests {
 
     use super::{
         CargoSelector, activate_build_config, activate_build_context, apply_cargo_build_outcome,
+        build_with_config,
     };
 
     #[test]
@@ -486,10 +488,55 @@ mod tests {
             Some(cargo_artifact_dir.as_path())
         );
         assert_eq!(
+            invocation.runtime_artifacts().cargo_source_artifact_dir(),
+            Some(cargo_artifact_dir.as_path())
+        );
+        assert_eq!(
+            invocation.runtime_artifacts().cargo_source_elf(),
+            Some(expected_elf.as_path())
+        );
+        assert_eq!(
             invocation.runtime_artifacts().runtime_artifact_dir(),
             Some(cargo_artifact_dir.as_path())
         );
+        assert!(invocation.runtime_artifacts().debug_artifacts().is_empty());
         assert!(invocation.runtime_arch().is_some());
+    }
+
+    #[tokio::test]
+    async fn custom_build_only_does_not_prepare_runtime_artifacts() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(
+            temp.path().join("Cargo.toml"),
+            "[package]\nname = \"kernel\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+        fs::create_dir_all(temp.path().join("src")).unwrap();
+        fs::write(temp.path().join("src/main.rs"), "fn main() {}\n").unwrap();
+        let marker = temp.path().join("custom-build-ran");
+        let mut invocation = Invocation::new(InvocationOptions::new(
+            Some(temp.path().to_path_buf()),
+            None,
+            None,
+            false,
+        ))
+        .unwrap();
+        let config = BuildConfig {
+            system: BuildSystem::Custom(Custom {
+                build_cmd: format!("printf built > {}", marker.display()),
+                elf_path: "target/kernel.elf".into(),
+                to_bin: true,
+            }),
+        };
+
+        build_with_config(&mut invocation, &config, None)
+            .await
+            .unwrap();
+
+        assert_eq!(fs::read_to_string(marker).unwrap(), "built");
+        assert!(invocation.runtime_artifacts().elf().is_none());
+        assert!(invocation.runtime_artifacts().bin().is_none());
+        assert!(invocation.runtime_arch().is_none());
     }
 
     #[test]

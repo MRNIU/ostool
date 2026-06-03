@@ -7,6 +7,7 @@ use object::Architecture;
 
 use crate::{
     artifact::{
+        object_tools::ObjectTools,
         runtime::{PreparedRuntimeArtifacts, RuntimeArtifactOptions, prepare_runtime_artifacts},
         state::OutputArtifacts,
     },
@@ -185,10 +186,10 @@ impl Invocation {
                 debug: self.options.debug(),
                 cargo_artifact_dir: self
                     .runtime_artifacts()
-                    .cargo_artifact_dir()
+                    .cargo_source_artifact_dir()
                     .map(PathBuf::from),
                 strip_elf: false,
-                objcopy_program: PathBuf::from("rust-objcopy"),
+                objcopy_program: ObjectTools.objcopy(),
             },
         )?;
         let bin_path = prepared
@@ -216,7 +217,7 @@ impl Invocation {
                 debug: self.options.debug(),
                 cargo_artifact_dir: None,
                 strip_elf: true,
-                objcopy_program: PathBuf::from("rust-objcopy"),
+                objcopy_program: ObjectTools.objcopy(),
             },
         )?;
         self.apply_prepared_runtime_artifacts(prepared);

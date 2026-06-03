@@ -7,11 +7,9 @@ use std::{
 
 use anyhow::Context;
 use async_trait::async_trait;
-use byte_unit::Byte;
 use colored::Colorize;
-use fitimage::{ComponentConfig, FitImageBuilder, FitImageConfig};
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
-use log::{info, warn};
+use log::info;
 use network_interface::{Addr, NetworkInterface, NetworkInterfaceConfig};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -40,6 +38,7 @@ use crate::{
             BoxedAsyncRead, BoxedAsyncWrite, SerialStreamTasks, connect_serial_stream,
         },
     },
+    boot::fit::{self, FitInput},
     invocation::Invocation,
     process::ProcessContext,
     project::variables::{self, VariableScope},
@@ -53,15 +52,6 @@ use crate::{
     sterm::{AsyncTerminal, TerminalConfig},
     utils::PathResultExt,
 };
-
-/// FIT image 生成相关的错误消息常量
-mod errors {
-    pub const KERNEL_READ_ERROR: &str = "读取 kernel 文件失败";
-    pub const DTB_READ_ERROR: &str = "读取 DTB 文件失败";
-    pub const FIT_BUILD_ERROR: &str = "构建 FIT image 失败";
-    pub const FIT_SAVE_ERROR: &str = "保存 FIT image 失败";
-    pub const DIR_ERROR: &str = "无法获取 kernel 文件目录";
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
 pub struct UbootConfig {
@@ -1049,109 +1039,6 @@ where
         }
     }
 
-    /// 生成包含 kernel 和 FDT 的压缩 FIT image。
-    async fn generate_fit_image(
-        &self,
-        kernel_path: &Path,
-        dtb_path: Option<&Path>,
-        kernel_load_addr: u64,
-        kernel_entry_addr: u64,
-        fdt_load_addr: Option<u64>,
-        _ramfs_load_addr: Option<u64>,
-    ) -> anyhow::Result<PathBuf> {
-        info!("Making FIT image...");
-        // 生成压缩的 FIT image
-        let output_dir = kernel_path
-            .parent()
-            .and_then(|p| p.to_str())
-            .ok_or_else(|| anyhow!("{}: {}", errors::DIR_ERROR, kernel_path.display()))?;
-
-        // 读取 kernel 数据
-        let kernel_data = fs::read(kernel_path)
-            .await
-            .with_path(errors::KERNEL_READ_ERROR, kernel_path)?;
-
-        info!(
-            "kernel: {} (size: {:.2})",
-            kernel_path.display(),
-            Byte::from(kernel_data.len())
-        );
-
-        let arch = self
-            .input
-            .arch
-            .ok_or_else(|| anyhow!("Cannot determine architecture for FIT image generation"))?;
-        let arch = match arch {
-            object::Architecture::Aarch64 => "arm64",
-            object::Architecture::Arm => "arm",
-            object::Architecture::LoongArch64 => "loongarch64",
-            object::Architecture::Riscv64 => "riscv",
-            other => anyhow::bail!("unsupported architecture for FIT image generation: {other:?}"),
-        };
-
-        let mut config = FitImageConfig::new("Various kernels, ramdisks and FDT blobs")
-            .with_kernel(
-                ComponentConfig::new("kernel", kernel_data)
-                    .with_description("This kernel")
-                    .with_type("kernel")
-                    .with_arch(arch)
-                    .with_os("linux")
-                    .with_compression(false)
-                    .with_load_address(kernel_load_addr)
-                    .with_entry_point(kernel_entry_addr),
-            );
-        let mut fdt_name = None;
-
-        // 处理 DTB 文件
-        if let Some(dtb_path) = dtb_path {
-            let data = fs::read(dtb_path)
-                .await
-                .with_path(errors::DTB_READ_ERROR, dtb_path)?;
-            info!(
-                "已读取 DTB 文件: {} (大小: {:.2})",
-                dtb_path.display(),
-                Byte::from(data.len())
-            );
-            fdt_name = Some("fdt");
-
-            // U-Boot 不接受压缩的 DTB
-            let mut fdt_config = ComponentConfig::new("fdt", data.clone())
-                .with_description("This fdt")
-                .with_type("flat_dt")
-                .with_arch(arch);
-
-            if let Some(addr) = fdt_load_addr {
-                fdt_config = fdt_config.with_load_address(addr);
-            }
-
-            config = config.with_fdt(fdt_config);
-        } else {
-            warn!("未指定 DTB 文件，将生成仅包含 kernel 的 FIT image");
-        }
-
-        config = config
-            .with_default_config("config-ostool")
-            .with_configuration(
-                "config-ostool",
-                "ostool configuration",
-                Some("kernel"),
-                fdt_name,
-                None::<String>,
-            );
-
-        let mut builder = FitImageBuilder::new();
-        let fit_data = builder
-            .build(config)
-            .with_context(|| errors::FIT_BUILD_ERROR.to_string())?;
-        let output_path = Path::new(output_dir).join("image.fit");
-        fs::write(&output_path, fit_data)
-            .await
-            .with_path(errors::FIT_SAVE_ERROR, &output_path)?;
-
-        info!("FIT image ok: {}", output_path.display());
-        Ok(output_path)
-    }
-
     async fn run(&mut self) -> anyhow::Result<()> {
         let run_result = self._run().await;
 
@@ -1240,15 +1127,11 @@ where
         }
 
         let mut fdt_load_addr = None;
-        let mut ramfs_load_addr = None;
-
         if let Ok(addr) = uboot.env_int("fdt_addr_r").await {
             fdt_load_addr = Some(addr as u64);
         }
 
-        if let Ok(addr) = uboot.env_int("ramdisk_addr_r").await {
-            ramfs_load_addr = Some(addr as u64);
-        }
+        let _ramfs_load_addr = uboot.env_int("ramdisk_addr_r").await.ok();
 
         let kernel_entry = if let Some(entry) = self
             .config
@@ -1292,18 +1175,25 @@ where
         if let Some(ref dtb_path) = prepared_dtb.fit_source {
             info!("Using DTB from: {}", dtb_path.display());
         }
-        let fitimage = self
-            .generate_fit_image(
-                &kernel,
-                prepared_dtb.fit_source.as_deref(),
-                kernel_entry,
-                kernel_entry,
-                fdt_load_addr,
-                ramfs_load_addr,
-            )
-            .await?;
+        let arch = self
+            .input
+            .arch
+            .ok_or_else(|| anyhow!("Cannot determine architecture for FIT image generation"))?;
+        let generated_fit = fit::generate_fit_image(FitInput {
+            kernel_path: kernel.clone(),
+            dtb_path: prepared_dtb.fit_source.clone(),
+            arch,
+            kernel_load_addr: kernel_entry,
+            kernel_entry_addr: kernel_entry,
+            fdt_load_addr,
+            output_path: None,
+        })
+        .await?;
 
-        let prepared = self.backend.stage_fit_image(&fitimage, &runtime).await?;
+        let prepared = self
+            .backend
+            .stage_fit_image(generated_fit.path(), &runtime)
+            .await?;
 
         let bootm_arg = self.resolved_bootm_arg(fit_loadaddr, &runtime);
         let bootcmd = if let Some(fitname) = prepared.bootfile.as_deref() {
@@ -1318,12 +1208,12 @@ where
                 request.bootcmd
             } else {
                 info!("No network boot request available, using loady to upload FIT image...");
-                Self::uboot_loady(&mut uboot, fit_loadaddr as usize, fitimage).await?;
+                Self::uboot_loady(&mut uboot, fit_loadaddr as usize, generated_fit.path()).await?;
                 self.serial_bootm_command(bootm_arg)
             }
         } else {
             info!("No TFTP config, using loady to upload FIT image...");
-            Self::uboot_loady(&mut uboot, fit_loadaddr as usize, fitimage).await?;
+            Self::uboot_loady(&mut uboot, fit_loadaddr as usize, generated_fit.path()).await?;
             self.serial_bootm_command(bootm_arg)
         };
 

@@ -45,6 +45,7 @@ use tokio::{
 
 use crate::{
     artifact::state::OutputArtifacts,
+    boot::artifacts::{default_qemu_dtb_dump_path, prepare_qemu_dtb_dump},
     build::config::Cargo,
     invocation::Invocation,
     process::ProcessContext,
@@ -449,14 +450,9 @@ impl QemuRunner {
         }
 
         if self.dtbdump {
-            let dtb_dump_path = PathBuf::from("target/qemu.dtb");
-            if let Err(err) = fs::remove_file(&dtb_dump_path).await
-                && err.kind() != ErrorKind::NotFound
-            {
-                return Err(err).with_path("failed to remove file", &dtb_dump_path);
-            }
+            let dtb_dump = prepare_qemu_dtb_dump(default_qemu_dtb_dump_path()).await?;
             cmd.arg("-machine")
-                .arg(format!("dumpdtb={}", dtb_dump_path.display()));
+                .arg(format!("dumpdtb={}", dtb_dump.path().display()));
             // machine = format!("{},dumpdtb=target/qemu.dtb", machine);
         }
 

@@ -29,7 +29,7 @@ use std::{
     path::PathBuf,
     process::Stdio,
     sync::{Arc, Mutex},
-    time::Duration,
+    time::Instant,
 };
 
 use anyhow::{Context, anyhow};
@@ -54,8 +54,10 @@ use crate::{
     project::variables::{self, VariableScope},
     project::{ProjectLayout, metadata},
     run::{
+        execution::{RunnerExecutionSummary, RunnerExitStatus, timeout_duration},
         output_matcher::{ByteStreamMatcher, compile_regexes, print_match_event},
         ovmf_prebuilt::{Arch, FileType, Prebuilt, Source},
+        qemu_plan::{QemuBootSource, QemuCommandPlanInput, build_qemu_command_plan},
         shell_init::{SHELL_INIT_DELAY, ShellAutoInitMatcher, normalize_shell_init_config},
     },
     sterm::{AsyncTerminal, TerminalConfig},
@@ -432,8 +434,6 @@ impl QemuRunner {
         }
         .to_string();
 
-        let mut need_machine = true;
-
         #[allow(unused_mut)]
         let mut qemu_executable = format!("qemu-system-{}", arch);
 
@@ -450,61 +450,47 @@ impl QemuRunner {
             }
         }
 
-        let mut cmd = crate::process::command(&qemu_executable, &self.input.process_context);
+        let dtb_dump_path = if self.dtbdump {
+            Some(
+                prepare_qemu_dtb_dump(default_qemu_dtb_dump_path())
+                    .await?
+                    .path()
+                    .to_path_buf(),
+            )
+        } else {
+            None
+        };
 
-        for arg in &self.config.args {
-            if arg == "-machine" || arg == "-M" {
-                need_machine = false;
-            }
-            cmd.arg(arg);
-        }
-
-        if self.dtbdump {
-            let dtb_dump = prepare_qemu_dtb_dump(default_qemu_dtb_dump_path()).await?;
-            cmd.arg("-machine")
-                .arg(format!("dumpdtb={}", dtb_dump.path().display()));
-            // machine = format!("{},dumpdtb=target/qemu.dtb", machine);
-        }
-
-        if need_machine {
-            cmd.arg("-machine").arg(machine);
-        }
-
-        if self.input.debug {
-            cmd.arg("-s").arg("-S");
-        }
-
-        let mut use_kernel_loader = true;
-        if let Some(uefi) = self.prepare_uefi().await? {
+        let boot_source = if let Some(uefi) = self.prepare_uefi().await? {
             match uefi {
                 UefiBootConfig::Pflash {
                     code,
                     vars,
                     esp_dir,
-                } => {
-                    cmd.arg("-drive").arg(format!(
-                        "if=pflash,format=raw,unit=0,readonly=on,file={}",
-                        code.display()
-                    ));
-                    cmd.arg("-drive").arg(format!(
-                        "if=pflash,format=raw,unit=1,file={}",
-                        vars.display()
-                    ));
-                    cmd.arg("-drive")
-                        .arg(format!("format=raw,file=fat:rw:{}", esp_dir.display()));
-                    use_kernel_loader = false;
-                }
+                } => Some(QemuBootSource::uefi_pflash(code, vars, esp_dir)),
             }
-        }
+        } else {
+            self.input
+                .artifacts
+                .runtime_image()
+                .map(|path| QemuBootSource::direct_kernel_loader(path.to_path_buf()))
+        };
 
-        if use_kernel_loader && let Some(kernel_path) = self.input.artifacts.runtime_image() {
-            cmd.arg("-kernel").arg(kernel_path);
-        }
+        let plan = build_qemu_command_plan(QemuCommandPlanInput {
+            executable: qemu_executable,
+            config_args: self.config.args.iter().map(OsString::from).collect(),
+            default_machine: machine,
+            dtb_dump_path,
+            debug: self.input.debug,
+            boot_source,
+        });
+        let mut cmd = plan.render(&self.input.process_context);
         cmd.stdin(Stdio::piped());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
         cmd.print_cmd();
         let mut child = TokioCommand::from(cmd.into_std()).spawn()?;
+        let started_at = Instant::now();
         let stdin = child.stdin.take().context("failed to capture QEMU stdin")?;
         let stdout = child
             .stdout
@@ -544,7 +530,7 @@ impl QemuRunner {
             self.fail_regex.clone(),
         )));
         let shell_auto_init = Arc::new(Mutex::new(self.config.shell_auto_init()));
-        let match_result = Arc::new(Mutex::new(None::<anyhow::Result<()>>));
+        let match_result = Arc::new(Mutex::new(None));
         let terminal = AsyncTerminal::new(TerminalConfig {
             intercept_exit_sequence: false,
             timeout: timeout_duration(self.config.timeout),
@@ -561,7 +547,7 @@ impl QemuRunner {
                     if let Some(matched) = matcher.observe_byte(byte) {
                         print_match_event(&matched);
                         let mut result = match_result.lock().unwrap();
-                        *result = Some(matched.kind.into_result(&matched));
+                        *result = Some(matched);
                         handle.stop_after(crate::run::output_matcher::MATCH_DRAIN_DURATION);
                     }
 
@@ -596,20 +582,16 @@ impl QemuRunner {
         let _ = stderr_task.await;
         let _ = write_task.await;
 
-        terminal_result?;
-
-        if let Some(result) = match_result.lock().unwrap().take() {
-            result?;
-        } else if !status.success() {
-            unsafe {
-                return Err(anyhow::anyhow!(
-                    "{}",
-                    OsString::from_encoded_bytes_unchecked(stderr_capture.lock().unwrap().clone())
-                        .to_string_lossy()
-                ));
-            }
-        }
-        Ok(())
+        let stderr = stderr_capture.lock().unwrap().clone();
+        RunnerExecutionSummary::new(
+            "QEMU",
+            RunnerExitStatus::process(status),
+            started_at.elapsed(),
+        )
+        .with_terminal_error(terminal_result.err())
+        .with_stream_match(match_result.lock().unwrap().take())
+        .with_stderr_log(&stderr)
+        .into_result()
     }
 
     async fn prepare_uefi(&self) -> anyhow::Result<Option<UefiBootConfig>> {
@@ -781,13 +763,6 @@ pub(crate) fn resolve_qemu_config_path_in_dir(
     };
 
     Ok(search_dir.join(default_filename))
-}
-
-fn timeout_duration(timeout: Option<u64>) -> Option<Duration> {
-    match timeout {
-        Some(0) | None => None,
-        Some(secs) => Some(Duration::from_secs(secs)),
-    }
 }
 
 async fn read_child_stream<R>(

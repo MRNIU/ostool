@@ -2,7 +2,7 @@ use std::{
     io,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, anyhow};
@@ -46,6 +46,7 @@ use crate::{
     process::ProcessContext,
     project::variables::{self, VariableScope},
     run::{
+        execution::{RunnerExecutionSummary, RunnerExitStatus, timeout_duration},
         output_matcher::{
             ByteStreamMatcher, MATCH_DRAIN_DURATION, compile_regexes, print_match_event,
         },
@@ -1218,7 +1219,7 @@ where
             self.fail_regex.clone(),
         )));
 
-        let res = Arc::new(Mutex::<Option<anyhow::Result<()>>>::new(None));
+        let res = Arc::new(Mutex::new(None));
         let res_clone = res.clone();
         let matcher_clone = matcher.clone();
         let shell_init = Arc::new(Mutex::new(self.config.shell_auto_init()));
@@ -1265,13 +1266,14 @@ where
             timeout: timeout_duration(self.config.timeout),
             timeout_label: "kernel boot".to_string(),
         });
-        terminal
+        let started_at = Instant::now();
+        let terminal_result = terminal
             .run(inbound_rx, outbound_tx, move |h, byte| {
                 let mut matcher = matcher_clone.lock().unwrap();
                 if let Some(matched) = matcher.observe_byte(byte) {
                     print_match_event(&matched);
                     let mut res_lock = res_clone.lock().unwrap();
-                    *res_lock = Some(matched.kind.into_result(&matched));
+                    *res_lock = Some(matched);
                     h.stop_after(MATCH_DRAIN_DURATION);
                 }
 
@@ -1286,7 +1288,7 @@ where
                     h.stop();
                 }
             })
-            .await?;
+            .await;
         let mut write_task = write_task;
         let write_join = tokio::time::timeout(Duration::from_secs(1), &mut write_task).await;
         match write_join {
@@ -1319,9 +1321,14 @@ where
 
         {
             let mut res_lock = res.lock().unwrap();
-            if let Some(result) = res_lock.take() {
-                result?;
-            }
+            RunnerExecutionSummary::new(
+                "kernel boot",
+                RunnerExitStatus::not_available(),
+                started_at.elapsed(),
+            )
+            .with_terminal_error(terminal_result.err())
+            .with_stream_match(res_lock.take())
+            .into_result()?;
         }
         Ok(())
     }
@@ -1411,13 +1418,6 @@ fn detect_tftp_ip(net: Option<&Net>) -> Option<String> {
 
     info!("TFTP : {}", ip_string);
     Some(ip_string)
-}
-
-fn timeout_duration(timeout: Option<u64>) -> Option<Duration> {
-    match timeout {
-        Some(0) | None => None,
-        Some(secs) => Some(Duration::from_secs(secs)),
-    }
 }
 
 fn fit_artifact_path(fit_artifact: &BootArtifact) -> anyhow::Result<&Path> {

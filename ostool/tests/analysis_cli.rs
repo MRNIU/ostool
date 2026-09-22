@@ -58,11 +58,8 @@ fn custom_build_generates_runner_config(runner: &str, field: &str) {
 }
 
 #[test]
-fn custom_qemu_config_is_read_after_build_hook() {
-    custom_build_generates_runner_config("qemu", "args");
-}
-
-#[test]
-fn custom_uboot_config_is_read_after_build_hook() {
-    custom_build_generates_runner_config("uboot", "dtb_file");
+fn custom_runner_configs_are_read_after_build_hooks() {
+    for (runner, field) in [("qemu", "args"), ("uboot", "dtb_file")] {
+        custom_build_generates_runner_config(runner, field);
+    }
 }

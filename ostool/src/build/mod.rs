@@ -406,7 +406,7 @@ fn generate_build_analysis(
     let source = match &config.system {
         BuildSystem::Cargo(_) => invocation
             .runtime_artifacts()
-            .analysis_source_elf()
+            .cargo_source_elf()
             .context("Cargo build did not select an ELF for analysis")?
             .to_path_buf(),
         BuildSystem::Custom(custom) => {
@@ -466,7 +466,7 @@ pub async fn cargo_run(
     config_path: Option<&Path>,
     runner: &CargoRunnerKind,
 ) -> anyhow::Result<()> {
-    run_with_config(
+    cargo_run_with_config(
         invocation,
         &BuildConfig {
             system: BuildSystem::Cargo(Box::new(config.clone())),
@@ -478,38 +478,27 @@ pub async fn cargo_run(
     .await
 }
 
-/// Builds and runs a complete build configuration, including optional analysis.
+/// Builds and runs Cargo with the complete configuration, including optional analysis.
 ///
-/// Cargo-only callers may continue to use [`cargo_run`]. Analysis failures are
-/// returned before starting the runner.
-pub async fn run_with_config(
+/// Rejects custom build configurations. Analysis failures are returned before
+/// starting the runner; [`cargo_run`] uses the default analysis configuration.
+pub async fn cargo_run_with_config(
     invocation: &mut Invocation,
     config: &BuildConfig,
     config_path: Option<&Path>,
     runner: &CargoRunnerKind,
 ) -> anyhow::Result<()> {
-    let debug = match &config.system {
-        BuildSystem::Cargo(_) => matches!(runner, CargoRunnerKind::Qemu(args) if args.debug),
-        BuildSystem::Custom(_) => invocation.options().debug(),
+    let BuildSystem::Cargo(cargo) = &config.system else {
+        anyhow::bail!("cargo_run_with_config requires a Cargo build configuration");
     };
+    let debug = matches!(runner, CargoRunnerKind::Qemu(args) if args.debug);
     prepare_with_config(invocation, config, config_path, debug).await?;
 
     match runner {
         CargoRunnerKind::Qemu(args) => {
             let qemu = match &args.qemu {
                 Some(config) => config.clone(),
-                None => match &config.system {
-                    BuildSystem::Cargo(cargo) => {
-                        crate::run::qemu::ensure_config_for_cargo(invocation, cargo).await?
-                    }
-                    BuildSystem::Custom(_) => {
-                        crate::run::qemu::ensure_config_in_dir(
-                            invocation,
-                            invocation.workspace_dir(),
-                        )
-                        .await?
-                    }
-                },
+                None => crate::run::qemu::ensure_config_for_cargo(invocation, cargo).await?,
             };
             crate::run::qemu::run_qemu_with_debug(
                 invocation,
@@ -524,18 +513,7 @@ pub async fn run_with_config(
         CargoRunnerKind::Uboot(args) => {
             let uboot = match &args.uboot {
                 Some(config) => config.clone(),
-                None => match &config.system {
-                    BuildSystem::Cargo(cargo) => {
-                        crate::run::uboot::ensure_config_for_cargo(invocation, cargo).await?
-                    }
-                    BuildSystem::Custom(_) => {
-                        crate::run::uboot::ensure_config_in_dir(
-                            invocation,
-                            invocation.workspace_dir(),
-                        )
-                        .await?
-                    }
-                },
+                None => crate::run::uboot::ensure_config_for_cargo(invocation, cargo).await?,
             };
             crate::run::uboot::run_uboot(invocation, &uboot).await?;
         }

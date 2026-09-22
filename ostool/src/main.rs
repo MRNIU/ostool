@@ -378,7 +378,7 @@ async fn try_main() -> Result<()> {
                             debug,
                             dtb_dump,
                         });
-                        build::run_with_config(
+                        build::cargo_run_with_config(
                             &mut invocation,
                             &loaded_build_config.config,
                             Some(loaded_build_config.path.as_path()),
@@ -437,7 +437,7 @@ async fn try_main() -> Result<()> {
                         let kind = CargoRunnerKind::new_uboot(CargoUbootRunnerArgs {
                             uboot: uboot_config,
                         });
-                        build::run_with_config(
+                        build::cargo_run_with_config(
                             &mut invocation,
                             &loaded_build_config.config,
                             Some(loaded_build_config.path.as_path()),

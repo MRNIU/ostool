@@ -248,7 +248,7 @@ symbols = true
 
 这些功能使用现有 Rust 工具链中的 LLVM 工具；若缺少它们，运行 `rustup component add llvm-tools` 安装。无需安装 `cargo-binutils` 包装器。工具缺失、工具返回非零，或输入不是可解析的 ELF 时，构建会在启动 runner 前失败。
 
-公开 Rust API 中，`build::run_with_config(invocation, &BuildConfig, config_path, &CargoRunnerKind)` 接受完整配置，并为 Cargo 和 Custom 构建读取此根级配置。`build::prepare_with_config` 可先完成构建、运行时 ELF/BIN 与分析，再由调用方加载 runner 配置并运行。既有的 `cargo_build` 与 `cargo_run` 仍是 Cargo 专用辅助 API，并使用默认的分析配置。直接构造 `BuildConfig` 字面量时，请显式添加 `artifacts: Default::default()`，或使用 `..Default::default()`：
+库调用方可通过 `build::cargo_run_with_config` 为 Cargo 构建传入完整 `BuildConfig`。`build::prepare_with_config` 为两种构建系统准备运行时与分析产物，随后由调用方加载 runner 配置并运行。既有 `cargo_build` 与 `cargo_run` 使用默认分析配置。直接构造 `BuildConfig` 时添加 `artifacts: Default::default()`：
 
 ```rust
 let config = BuildConfig {

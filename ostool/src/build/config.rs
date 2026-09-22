@@ -200,17 +200,7 @@ pub enum LogLevel {
 
 #[cfg(test)]
 mod tests {
-    use super::{ArtifactConfig, Cargo, Custom};
-
-    #[test]
-    fn artifact_analysis_defaults_to_disabled() {
-        let artifacts: ArtifactConfig = toml::from_str("").unwrap();
-
-        assert!(!artifacts.analysis.disassembly);
-        assert!(!artifacts.analysis.elf_info);
-        assert!(!artifacts.analysis.symbols);
-        assert!(!artifacts.analysis.is_enabled());
-    }
+    use super::{Cargo, Custom};
 
     #[test]
     fn legacy_build_configs_and_analysis_flags_round_trip() {

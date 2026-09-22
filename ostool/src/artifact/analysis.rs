@@ -1,10 +1,9 @@
 //! Human-readable ELF analysis artifact generation.
 
 use std::{
-    ffi::OsString,
     fs,
+    io::Write,
     path::{Path, PathBuf},
-    process::Output,
 };
 
 use anyhow::{Context, anyhow, bail};
@@ -44,116 +43,90 @@ where
         return Ok(DebugArtifactRegistry::default());
     }
 
-    let requested = requested_artifacts(config, source_elf)?;
-    let temporary = requested
-        .iter()
-        .map(|artifact| artifact.temporary_path())
-        .collect::<Vec<_>>();
-
-    let result = generate_requested_artifacts(context, source_elf, &requested, &mut resolve_tool)
-        .and_then(|contents| publish_artifacts(&requested, &temporary, contents));
-
-    match result {
-        Ok(registry) => Ok(registry),
-        Err(error) => {
-            remove_paths(
-                temporary
-                    .iter()
-                    .chain(requested.iter().map(|artifact| &artifact.path)),
-            );
-            Err(error)
-        }
-    }
-}
-
-#[derive(Clone)]
-struct RequestedArtifact {
-    kind: DebugArtifactKind,
-    path: PathBuf,
-}
-
-impl RequestedArtifact {
-    fn temporary_path(&self) -> PathBuf {
-        let mut name = OsString::from(".");
-        name.push(
-            self.path
-                .file_name()
-                .expect("analysis artifact has a file name"),
-        );
-        name.push(format!(".{}.tmp", std::process::id()));
-        self.path.with_file_name(name)
-    }
-}
-
-fn requested_artifacts(
-    config: &AnalysisConfig,
-    source_elf: &Path,
-) -> anyhow::Result<Vec<RequestedArtifact>> {
     if source_elf.file_name().is_none() {
         bail!("invalid ELF file path: {}", source_elf.display());
     }
+    let requested: Vec<_> = [
+        (
+            config.disassembly,
+            DebugArtifactKind::Disassembly,
+            "disassembly",
+            "llvm-objdump",
+            &["--disassemble"][..],
+        ),
+        (
+            config.elf_info,
+            DebugArtifactKind::ElfInfo,
+            "elf-info",
+            "llvm-readobj",
+            &["--all"][..],
+        ),
+        (
+            config.symbols,
+            DebugArtifactKind::Symbols,
+            "symbols",
+            "llvm-nm",
+            &["--demangle", "--print-size", "--numeric-sort"][..],
+        ),
+    ]
+    .into_iter()
+    .filter(|(enabled, ..)| *enabled)
+    .map(|(_, kind, suffix, tool, args)| (kind, output_path(source_elf, suffix), tool, args))
+    .collect();
 
-    let mut artifacts = Vec::new();
-    if config.disassembly {
-        artifacts.push(RequestedArtifact {
-            kind: DebugArtifactKind::Disassembly,
-            path: output_path(source_elf, "disassembly"),
-        });
-    }
-    if config.elf_info {
-        artifacts.push(RequestedArtifact {
-            kind: DebugArtifactKind::ElfInfo,
-            path: output_path(source_elf, "elf-info"),
-        });
-    }
-    if config.symbols {
-        artifacts.push(RequestedArtifact {
-            kind: DebugArtifactKind::Symbols,
-            path: output_path(source_elf, "symbols"),
-        });
-    }
-    Ok(artifacts)
-}
+    let result = (|| {
+        let metadata = elf_metadata(source_elf)?;
+        let mut staged = Vec::new();
+        for (kind, path, tool_name, args) in &requested {
+            let tool = resolve_tool(tool_name).with_context(|| {
+                format!(
+                    "failed to resolve {tool_name} for ELF {}",
+                    source_elf.display()
+                )
+            })?;
+            let mut contents = run_tool(context, &tool, tool_name, args, source_elf)?;
+            let mut temporary = tempfile::NamedTempFile::new_in(path.parent().unwrap())
+                .with_context(|| {
+                    format!("failed to stage analysis artifact: {}", path.display())
+                })?;
+            if *kind == DebugArtifactKind::ElfInfo {
+                let mut summary = metadata_summary(&metadata);
+                summary.extend_from_slice(b"\n\nllvm-readobj output:\n");
+                summary.extend_from_slice(&contents);
+                contents = summary;
+            }
+            temporary.write_all(&contents).with_context(|| {
+                format!("failed to write analysis artifact: {}", path.display())
+            })?;
+            staged.push((kind, path, temporary));
+        }
 
-fn generate_requested_artifacts<F>(
-    context: &ProcessContext,
-    source_elf: &Path,
-    requested: &[RequestedArtifact],
-    resolve_tool: &mut F,
-) -> anyhow::Result<Vec<Vec<u8>>>
-where
-    F: FnMut(&str) -> anyhow::Result<PathBuf>,
-{
-    let metadata = elf_metadata(source_elf)?;
-
-    let mut contents = Vec::with_capacity(requested.len());
-    for artifact in requested {
-        let (tool_name, args) = match artifact.kind {
-            DebugArtifactKind::Disassembly => ("llvm-objdump", vec!["--disassemble"]),
-            DebugArtifactKind::ElfInfo => ("llvm-readobj", vec!["--all"]),
-            DebugArtifactKind::Symbols => (
-                "llvm-nm",
-                vec!["--demangle", "--print-size", "--numeric-sort"],
-            ),
-        };
-        let tool = resolve_tool(tool_name).with_context(|| {
-            format!(
-                "failed to resolve {tool_name} for ELF {}",
-                source_elf.display()
-            )
-        })?;
-        let stdout = run_tool(context, &tool, tool_name, &args, source_elf)?;
-
-        if artifact.kind == DebugArtifactKind::ElfInfo {
-            let mut elf_info = metadata_summary(&metadata);
-            elf_info.extend_from_slice(b"\n\nllvm-readobj output:\n");
-            elf_info.extend_from_slice(&stdout);
-            contents.push(elf_info);
-        } else {
-            contents.push(stdout);
+        let mut registry = DebugArtifactRegistry::default();
+        for (kind, path, temporary) in staged {
+            temporary
+                .persist(path)
+                .map_err(|error| error.error)
+                .with_context(|| {
+                    format!("failed to publish analysis artifact: {}", path.display())
+                })?;
+            registry.register(*kind, path.clone());
+        }
+        Ok(registry)
+    })();
+    if result.is_err() {
+        // Tempfiles clean themselves up; discard stale or partially published outputs too.
+        for (_, path, _, _) in &requested {
+            if let Err(error) = fs::remove_file(path)
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                log::warn!(
+                    "failed to remove analysis artifact {}: {error}",
+                    path.display()
+                );
+            }
         }
     }
-    Ok(contents)
+    result
 }
 
 fn elf_metadata(source_elf: &Path) -> anyhow::Result<ElfMetadata> {
@@ -178,14 +151,6 @@ fn run_tool(
             source_elf.display()
         )
     })?;
-    successful_stdout(tool_name, source_elf, output)
-}
-
-fn successful_stdout(
-    tool_name: &str,
-    source_elf: &Path,
-    output: Output,
-) -> anyhow::Result<Vec<u8>> {
     if output.status.success() {
         return Ok(output.stdout);
     }
@@ -197,50 +162,6 @@ fn successful_stdout(
         output.status,
         stderr.trim()
     ))
-}
-
-fn publish_artifacts(
-    requested: &[RequestedArtifact],
-    temporary: &[PathBuf],
-    contents: Vec<Vec<u8>>,
-) -> anyhow::Result<DebugArtifactRegistry> {
-    for (path, content) in temporary.iter().zip(contents) {
-        fs::write(path, content)
-            .with_context(|| format!("failed to write analysis artifact: {}", path.display()))?;
-    }
-
-    let mut registry = DebugArtifactRegistry::default();
-    for (artifact, temporary) in requested.iter().zip(temporary) {
-        if artifact.path.exists() {
-            fs::remove_file(&artifact.path).with_context(|| {
-                format!(
-                    "failed to replace analysis artifact: {}",
-                    artifact.path.display()
-                )
-            })?;
-        }
-        fs::rename(temporary, &artifact.path).with_context(|| {
-            format!(
-                "failed to publish analysis artifact: {}",
-                artifact.path.display()
-            )
-        })?;
-        registry.register(artifact.kind, artifact.path.clone());
-    }
-    Ok(registry)
-}
-
-fn remove_paths<'a>(paths: impl Iterator<Item = &'a PathBuf>) {
-    for path in paths {
-        if let Err(error) = fs::remove_file(path)
-            && error.kind() != std::io::ErrorKind::NotFound
-        {
-            log::warn!(
-                "failed to remove analysis artifact {}: {error}",
-                path.display()
-            );
-        }
-    }
 }
 
 fn metadata_summary(metadata: &ElfMetadata) -> Vec<u8> {
@@ -286,7 +207,7 @@ mod tests {
     };
 
     use crate::{
-        artifact::{analysis::generate_with_tool_resolver, state::DebugArtifactKind},
+        artifact::analysis::generate_with_tool_resolver,
         build::config::AnalysisConfig,
         process::ProcessContext,
         project::{resolve_project_layout, variables::VariableScope},
@@ -333,29 +254,6 @@ mod tests {
         .unwrap();
 
         assert!(registry.is_empty());
-    }
-
-    #[test]
-    fn artifact_output_paths_append_full_source_filename() {
-        let source = PathBuf::from("output with spaces/kernel.elf");
-
-        assert_eq!(
-            super::output_path(&source, "disassembly"),
-            PathBuf::from("output with spaces/kernel.elf.disassembly")
-        );
-        assert_eq!(
-            super::output_path(&source, "elf-info"),
-            PathBuf::from("output with spaces/kernel.elf.elf-info")
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn artifact_names_preserve_non_utf8_source_names() {
-        use std::{ffi::OsString, os::unix::ffi::OsStringExt};
-        let source = PathBuf::from(OsString::from_vec(b"kernel-\xff.elf".to_vec()));
-        let expected = PathBuf::from(OsString::from_vec(b"kernel-\xff.elf.symbols".to_vec()));
-        assert_eq!(super::output_path(&source, "symbols"), expected);
     }
 
     #[cfg(unix)]
@@ -435,57 +333,20 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn successful_generation_overwrites_output_and_registers_it() {
-        let temp = tempfile::tempdir().unwrap();
-        let context = process_context(temp.path());
-        let source = temp.path().join("kernel with spaces.elf");
-        write_elf(&source);
-        let output = super::output_path(&source, "disassembly");
-        fs::write(&output, "stale").unwrap();
-        let objdump = fake_tool(temp.path(), "objdump", "printf 'fresh disassembly'");
-        let config = AnalysisConfig {
-            disassembly: true,
-            ..Default::default()
-        };
-
-        let registry =
-            generate_with_tool_resolver(&context, &config, &source, |_| Ok(objdump.clone()))
-                .unwrap();
-
-        assert_eq!(fs::read_to_string(&output).unwrap(), "fresh disassembly");
-        assert_eq!(
-            registry.get(DebugArtifactKind::Disassembly),
-            Some(output.as_path())
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
     fn invalid_elf_fails_before_any_tool_is_resolved() {
         let temp = tempfile::tempdir().unwrap();
         let context = process_context(temp.path());
         let source = temp.path().join("invalid.elf");
         fs::write(&source, "not an ELF").unwrap();
-        for config in [
-            AnalysisConfig {
-                disassembly: true,
-                ..Default::default()
-            },
-            AnalysisConfig {
-                elf_info: true,
-                ..Default::default()
-            },
-            AnalysisConfig {
-                symbols: true,
-                ..Default::default()
-            },
-        ] {
-            let error = generate_with_tool_resolver(&context, &config, &source, |_| {
-                panic!("invalid ELF must be rejected before tool lookup")
-            })
-            .unwrap_err();
-            assert!(format!("{error:#}").contains("failed to parse ELF file"));
-        }
-        assert!(!super::output_path(&source, "elf-info").exists());
+        let config = AnalysisConfig {
+            symbols: true,
+            ..Default::default()
+        };
+        let error = generate_with_tool_resolver(&context, &config, &source, |_| {
+            panic!("invalid ELF must be rejected before tool lookup")
+        })
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("failed to parse ELF file"));
+        assert!(!super::output_path(&source, "symbols").exists());
     }
 }

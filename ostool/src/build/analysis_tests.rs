@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::HashMap,
     fs,
     path::{Path, PathBuf},
     process::Command,
@@ -13,10 +13,7 @@ use crate::{
     invocation::{Invocation, InvocationOptions},
 };
 
-use super::{
-    CargoQemuRunnerArgs, CargoRunnerKind, RuntimeArtifactInput, build_with_config,
-    prepare_runtime_artifact, run_with_config,
-};
+use super::{RuntimeArtifactInput, build_with_config, prepare_runtime_artifact};
 
 struct Fixture {
     _temp: tempfile::TempDir,
@@ -104,10 +101,6 @@ fn llvm_nm(path: &Path) -> Vec<u8> {
     output.stdout
 }
 
-fn symbol_lines(output: &[u8]) -> BTreeSet<&[u8]> {
-    output.split(|byte| *byte == b'\n').collect()
-}
-
 #[tokio::test]
 async fn cargo_build_emits_each_requested_analysis_artifact_after_hooks() {
     let fixture = Fixture::new();
@@ -138,7 +131,7 @@ async fn cargo_build_emits_each_requested_analysis_artifact_after_hooks() {
 
     let source = invocation
         .runtime_artifacts()
-        .analysis_source_elf()
+        .cargo_source_elf()
         .unwrap()
         .to_path_buf();
     assert!(pre_marker.exists());
@@ -241,7 +234,7 @@ fn prepared_runtime_copy_keeps_source_and_debug_registry_when_adding_bin() {
     );
     assert!(runtime_elf.exists());
     assert_eq!(
-        invocation.runtime_artifacts().analysis_source_elf(),
+        invocation.runtime_artifacts().cargo_source_elf(),
         Some(source.as_path())
     );
     assert_eq!(
@@ -251,18 +244,12 @@ fn prepared_runtime_copy_keeps_source_and_debug_registry_when_adding_bin() {
     assert!(bin.exists());
     let source_symbols = llvm_nm(&source);
     let runtime_symbols = llvm_nm(&runtime_elf);
-    assert_ne!(
-        symbol_lines(&source_symbols),
-        symbol_lines(&runtime_symbols)
-    );
+    assert_ne!(source_symbols, runtime_symbols);
     assert!(
-        symbol_lines(&fs::read(&symbols).unwrap()) == symbol_lines(&source_symbols),
+        fs::read(&symbols).unwrap() == source_symbols,
         "analysis must use the original ELF symbols"
     );
-    assert_ne!(
-        symbol_lines(&fs::read(&symbols).unwrap()),
-        symbol_lines(&runtime_symbols)
-    );
+    assert_ne!(fs::read(&symbols).unwrap(), runtime_symbols);
     assert_eq!(
         invocation
             .runtime_artifacts()
@@ -273,7 +260,7 @@ fn prepared_runtime_copy_keeps_source_and_debug_registry_when_adding_bin() {
 }
 
 #[tokio::test]
-async fn disabled_analysis_clears_debug_artifacts_from_previous_build() {
+async fn rebuild_clears_debug_artifacts_when_analysis_is_disabled_or_fails() {
     let fixture = Fixture::new();
     let source = fixture.copy_current_executable("analysis source");
     let mut invocation = fixture.invocation();
@@ -283,12 +270,24 @@ async fn disabled_analysis_clears_debug_artifacts_from_previous_build() {
     build_with_config(&mut invocation, &requested, None)
         .await
         .unwrap();
-    assert!(
+    let symbols = invocation
+        .runtime_artifacts()
+        .debug_artifacts()
+        .get(DebugArtifactKind::Symbols)
+        .unwrap()
+        .to_path_buf();
+    fs::write(&symbols, "stale symbols").unwrap();
+
+    build_with_config(&mut invocation, &requested, None)
+        .await
+        .unwrap();
+    assert_ne!(fs::read(&symbols).unwrap(), b"stale symbols");
+    assert_eq!(
         invocation
             .runtime_artifacts()
             .debug_artifacts()
-            .get(DebugArtifactKind::Symbols)
-            .is_some()
+            .get(DebugArtifactKind::Symbols),
+        Some(symbols.as_path())
     );
 
     build_with_config(&mut invocation, &disabled, None)
@@ -296,14 +295,6 @@ async fn disabled_analysis_clears_debug_artifacts_from_previous_build() {
         .unwrap();
 
     assert!(invocation.runtime_artifacts().debug_artifacts().is_empty());
-}
-
-#[tokio::test]
-async fn failed_analysis_clears_debug_artifacts_from_previous_build() {
-    let fixture = Fixture::new();
-    let source = fixture.copy_current_executable("analysis source");
-    let mut invocation = fixture.invocation();
-    let requested = custom_build(&source, "true".into(), analysis_config(false, false, true));
     let missing = fixture.root.join("missing source");
     let failing = custom_build(&missing, "true".into(), analysis_config(false, false, true));
 
@@ -325,35 +316,4 @@ async fn failed_analysis_clears_debug_artifacts_from_previous_build() {
     );
 
     assert!(invocation.runtime_artifacts().debug_artifacts().is_empty());
-}
-
-#[tokio::test]
-async fn invalid_runtime_elf_stops_before_qemu_config_is_generated() {
-    let fixture = Fixture::new();
-    let invalid_elf = fixture.root.join("not an elf");
-    fs::write(&invalid_elf, "not an ELF").unwrap();
-    let mut invocation = fixture.invocation();
-    let config = custom_build(
-        &invalid_elf,
-        "true".into(),
-        analysis_config(false, false, true),
-    );
-
-    let error = run_with_config(
-        &mut invocation,
-        &config,
-        None,
-        &CargoRunnerKind::new_qemu(CargoQemuRunnerArgs::default()),
-    )
-    .await
-    .unwrap_err();
-
-    assert!(error.to_string().contains("failed to parse ELF file"));
-    assert!(fs::read_dir(&fixture.root).unwrap().all(|entry| {
-        !entry
-            .unwrap()
-            .file_name()
-            .to_string_lossy()
-            .starts_with(".qemu")
-    }));
 }

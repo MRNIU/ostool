@@ -91,7 +91,7 @@ fn main() {
                 .strip_elf(false),
         );
         let _ = build::prepare_with_config(&mut invocation, &custom_build, None, false).await;
-        let _ = build::run_with_config(&mut invocation, &cargo_build, None, &qemu_runner).await;
+        let _ = build::cargo_run_with_config(&mut invocation, &cargo_build, None, &qemu_runner).await;
         let _ = build::cargo_run(&mut invocation, &cargo, None, &qemu_runner).await;
         let _ = build::cargo_run(&mut invocation, &cargo, None, &uboot_runner).await;
 

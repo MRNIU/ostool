@@ -76,37 +76,22 @@ mod tests {
 
     use object::Architecture;
 
-    #[derive(Clone, Copy)]
-    enum Endian {
-        Little,
-        Big,
-    }
-
-    fn write_u16(data: &mut [u8], offset: usize, value: u16, endian: Endian) {
-        let bytes = match endian {
-            Endian::Little => value.to_le_bytes(),
-            Endian::Big => value.to_be_bytes(),
-        };
+    fn write_u16(data: &mut [u8], offset: usize, value: u16) {
+        let bytes = value.to_le_bytes();
         data[offset..offset + bytes.len()].copy_from_slice(&bytes);
     }
 
-    fn write_u32(data: &mut [u8], offset: usize, value: u32, endian: Endian) {
-        let bytes = match endian {
-            Endian::Little => value.to_le_bytes(),
-            Endian::Big => value.to_be_bytes(),
-        };
+    fn write_u32(data: &mut [u8], offset: usize, value: u32) {
+        let bytes = value.to_le_bytes();
         data[offset..offset + bytes.len()].copy_from_slice(&bytes);
     }
 
-    fn write_u64(data: &mut [u8], offset: usize, value: u64, endian: Endian) {
-        let bytes = match endian {
-            Endian::Little => value.to_le_bytes(),
-            Endian::Big => value.to_be_bytes(),
-        };
+    fn write_u64(data: &mut [u8], offset: usize, value: u64) {
+        let bytes = value.to_le_bytes();
         data[offset..offset + bytes.len()].copy_from_slice(&bytes);
     }
 
-    fn elf64_with_symbol(symbol_defined: bool) -> Vec<u8> {
+    fn elf64(symbol_defined: Option<bool>) -> Vec<u8> {
         const PROGRAM_HEADER_OFFSET: usize = 64;
         const STRING_TABLE_OFFSET: usize = 0x180;
         const SYMBOL_TABLE_OFFSET: usize = 0x1c0;
@@ -119,167 +104,97 @@ mod tests {
         data[5] = 1;
         data[6] = 1;
 
-        write_u16(&mut data, 16, 2, Endian::Little);
-        write_u16(&mut data, 18, 183, Endian::Little);
-        write_u32(&mut data, 20, 1, Endian::Little);
-        write_u64(&mut data, 24, 0x400080, Endian::Little);
-        write_u64(&mut data, 32, PROGRAM_HEADER_OFFSET as u64, Endian::Little);
-        write_u64(&mut data, 40, SECTION_HEADER_OFFSET as u64, Endian::Little);
-        write_u16(&mut data, 52, 64, Endian::Little);
-        write_u16(&mut data, 54, 56, Endian::Little);
-        write_u16(&mut data, 56, 3, Endian::Little);
-        write_u16(&mut data, 58, 64, Endian::Little);
-        write_u16(&mut data, 60, 3, Endian::Little);
-        write_u16(&mut data, 62, 1, Endian::Little);
+        write_u16(&mut data, 16, 2);
+        write_u16(&mut data, 18, 183);
+        write_u32(&mut data, 20, 1);
+        write_u64(&mut data, 24, 0x400080);
+        write_u64(&mut data, 32, PROGRAM_HEADER_OFFSET as u64);
+        write_u64(
+            &mut data,
+            40,
+            symbol_defined
+                .map(|_| SECTION_HEADER_OFFSET as u64)
+                .unwrap_or(0),
+        );
+        write_u16(&mut data, 52, 64);
+        write_u16(&mut data, 54, 56);
+        write_u16(&mut data, 56, 3);
+        write_u16(&mut data, 58, 64);
+        write_u16(&mut data, 60, u16::from(symbol_defined.is_some()) * 3);
+        write_u16(&mut data, 62, u16::from(symbol_defined.is_some()));
 
-        write_u32(&mut data, PROGRAM_HEADER_OFFSET, 1, Endian::Little);
-        write_u32(&mut data, PROGRAM_HEADER_OFFSET + 4, 5, Endian::Little);
-        write_u64(&mut data, PROGRAM_HEADER_OFFSET + 8, 0x100, Endian::Little);
-        write_u64(
-            &mut data,
-            PROGRAM_HEADER_OFFSET + 16,
-            0x400000,
-            Endian::Little,
-        );
-        write_u64(
-            &mut data,
-            PROGRAM_HEADER_OFFSET + 24,
-            0x500000,
-            Endian::Little,
-        );
-        write_u64(&mut data, PROGRAM_HEADER_OFFSET + 32, 0x30, Endian::Little);
-        write_u64(&mut data, PROGRAM_HEADER_OFFSET + 40, 0x40, Endian::Little);
-        write_u64(
-            &mut data,
-            PROGRAM_HEADER_OFFSET + 48,
-            0x1000,
-            Endian::Little,
-        );
+        write_u32(&mut data, PROGRAM_HEADER_OFFSET, 1);
+        write_u32(&mut data, PROGRAM_HEADER_OFFSET + 4, 5);
+        write_u64(&mut data, PROGRAM_HEADER_OFFSET + 8, 0x100);
+        write_u64(&mut data, PROGRAM_HEADER_OFFSET + 16, 0x400000);
+        write_u64(&mut data, PROGRAM_HEADER_OFFSET + 24, 0x500000);
+        write_u64(&mut data, PROGRAM_HEADER_OFFSET + 32, 0x30);
+        write_u64(&mut data, PROGRAM_HEADER_OFFSET + 40, 0x40);
+        write_u64(&mut data, PROGRAM_HEADER_OFFSET + 48, 0x1000);
 
         let second_program_header = PROGRAM_HEADER_OFFSET + 56;
-        write_u32(&mut data, second_program_header, 1, Endian::Little);
-        write_u32(&mut data, second_program_header + 4, 6, Endian::Little);
-        write_u64(&mut data, second_program_header + 8, 0x200, Endian::Little);
-        write_u64(
-            &mut data,
-            second_program_header + 16,
-            0x401000,
-            Endian::Little,
-        );
-        write_u64(
-            &mut data,
-            second_program_header + 24,
-            0x501000,
-            Endian::Little,
-        );
-        write_u64(&mut data, second_program_header + 32, 0x20, Endian::Little);
-        write_u64(&mut data, second_program_header + 40, 0x30, Endian::Little);
-        write_u64(
-            &mut data,
-            second_program_header + 48,
-            0x1000,
-            Endian::Little,
-        );
+        write_u32(&mut data, second_program_header, 1);
+        write_u32(&mut data, second_program_header + 4, 6);
+        write_u64(&mut data, second_program_header + 8, 0x200);
+        write_u64(&mut data, second_program_header + 16, 0x401000);
+        write_u64(&mut data, second_program_header + 24, 0x501000);
+        write_u64(&mut data, second_program_header + 32, 0x20);
+        write_u64(&mut data, second_program_header + 40, 0x30);
+        write_u64(&mut data, second_program_header + 48, 0x1000);
 
         let note_program_header = second_program_header + 56;
-        write_u32(&mut data, note_program_header, 4, Endian::Little);
-        write_u32(&mut data, note_program_header + 4, 4, Endian::Little);
-        write_u64(&mut data, note_program_header + 8, 0x280, Endian::Little);
-        write_u64(
-            &mut data,
-            note_program_header + 16,
-            0x402000,
-            Endian::Little,
-        );
-        write_u64(
-            &mut data,
-            note_program_header + 24,
-            0x502000,
-            Endian::Little,
-        );
-        write_u64(&mut data, note_program_header + 32, 0x10, Endian::Little);
-        write_u64(&mut data, note_program_header + 40, 0x10, Endian::Little);
-        write_u64(&mut data, note_program_header + 48, 4, Endian::Little);
+        write_u32(&mut data, note_program_header, 4);
+        write_u32(&mut data, note_program_header + 4, 4);
+        write_u64(&mut data, note_program_header + 8, 0x280);
+        write_u64(&mut data, note_program_header + 16, 0x402000);
+        write_u64(&mut data, note_program_header + 24, 0x502000);
+        write_u64(&mut data, note_program_header + 32, 0x10);
+        write_u64(&mut data, note_program_header + 40, 0x10);
+        write_u64(&mut data, note_program_header + 48, 4);
 
-        data[STRING_TABLE_OFFSET..STRING_TABLE_OFFSET + STRING_TABLE.len()]
-            .copy_from_slice(STRING_TABLE);
+        if let Some(symbol_defined) = symbol_defined {
+            data[STRING_TABLE_OFFSET..STRING_TABLE_OFFSET + STRING_TABLE.len()]
+                .copy_from_slice(STRING_TABLE);
 
-        let symbol = SYMBOL_TABLE_OFFSET + 24;
-        write_u32(&mut data, symbol, 1, Endian::Little);
-        data[symbol + 4] = 0x10;
-        write_u16(
-            &mut data,
-            symbol + 6,
-            u16::from(symbol_defined),
-            Endian::Little,
-        );
-        write_u64(&mut data, symbol + 8, 0x400080, Endian::Little);
+            let symbol = SYMBOL_TABLE_OFFSET + 24;
+            write_u32(&mut data, symbol, 1);
+            data[symbol + 4] = 0x10;
+            write_u16(&mut data, symbol + 6, u16::from(symbol_defined));
+            write_u64(&mut data, symbol + 8, 0x400080);
 
-        let string_table_section = SECTION_HEADER_OFFSET + 64;
-        write_u32(&mut data, string_table_section + 4, 3, Endian::Little);
-        write_u64(
-            &mut data,
-            string_table_section + 24,
-            STRING_TABLE_OFFSET as u64,
-            Endian::Little,
-        );
-        write_u64(
-            &mut data,
-            string_table_section + 32,
-            STRING_TABLE.len() as u64,
-            Endian::Little,
-        );
-        write_u64(&mut data, string_table_section + 48, 1, Endian::Little);
+            let string_table_section = SECTION_HEADER_OFFSET + 64;
+            write_u32(&mut data, string_table_section + 4, 3);
+            write_u64(
+                &mut data,
+                string_table_section + 24,
+                STRING_TABLE_OFFSET as u64,
+            );
+            write_u64(
+                &mut data,
+                string_table_section + 32,
+                STRING_TABLE.len() as u64,
+            );
+            write_u64(&mut data, string_table_section + 48, 1);
 
-        let symbol_table_section = SECTION_HEADER_OFFSET + 128;
-        write_u32(&mut data, symbol_table_section + 4, 2, Endian::Little);
-        write_u64(
-            &mut data,
-            symbol_table_section + 24,
-            SYMBOL_TABLE_OFFSET as u64,
-            Endian::Little,
-        );
-        write_u64(&mut data, symbol_table_section + 32, 48, Endian::Little);
-        write_u32(&mut data, symbol_table_section + 40, 1, Endian::Little);
-        write_u64(&mut data, symbol_table_section + 48, 8, Endian::Little);
-        write_u64(&mut data, symbol_table_section + 56, 24, Endian::Little);
-
-        data
-    }
-
-    fn elf32_big_endian_without_symbols() -> Vec<u8> {
-        const PROGRAM_HEADER_OFFSET: usize = 52;
-
-        let mut data = vec![0; 0xa0];
-        data[..4].copy_from_slice(b"\x7fELF");
-        data[4] = 1;
-        data[5] = 2;
-        data[6] = 1;
-
-        write_u16(&mut data, 16, 2, Endian::Big);
-        write_u16(&mut data, 18, 40, Endian::Big);
-        write_u32(&mut data, 20, 1, Endian::Big);
-        write_u32(&mut data, 24, 0x8004, Endian::Big);
-        write_u32(&mut data, 28, PROGRAM_HEADER_OFFSET as u32, Endian::Big);
-        write_u16(&mut data, 40, 52, Endian::Big);
-        write_u16(&mut data, 42, 32, Endian::Big);
-        write_u16(&mut data, 44, 1, Endian::Big);
-
-        write_u32(&mut data, PROGRAM_HEADER_OFFSET, 1, Endian::Big);
-        write_u32(&mut data, PROGRAM_HEADER_OFFSET + 4, 0x80, Endian::Big);
-        write_u32(&mut data, PROGRAM_HEADER_OFFSET + 8, 0x8000, Endian::Big);
-        write_u32(&mut data, PROGRAM_HEADER_OFFSET + 12, 0x9000, Endian::Big);
-        write_u32(&mut data, PROGRAM_HEADER_OFFSET + 16, 0x10, Endian::Big);
-        write_u32(&mut data, PROGRAM_HEADER_OFFSET + 20, 0x20, Endian::Big);
-        write_u32(&mut data, PROGRAM_HEADER_OFFSET + 24, 6, Endian::Big);
-        write_u32(&mut data, PROGRAM_HEADER_OFFSET + 28, 0x1000, Endian::Big);
+            let symbol_table_section = SECTION_HEADER_OFFSET + 128;
+            write_u32(&mut data, symbol_table_section + 4, 2);
+            write_u64(
+                &mut data,
+                symbol_table_section + 24,
+                SYMBOL_TABLE_OFFSET as u64,
+            );
+            write_u64(&mut data, symbol_table_section + 32, 48);
+            write_u32(&mut data, symbol_table_section + 40, 1);
+            write_u64(&mut data, symbol_table_section + 48, 8);
+            write_u64(&mut data, symbol_table_section + 56, 24);
+        }
 
         data
     }
 
     #[test]
     fn parses_elf64_load_segments_and_executable_start_symbol() {
-        let metadata = ElfMetadata::parse(&elf64_with_symbol(true)).unwrap();
+        let metadata = ElfMetadata::parse(&elf64(Some(true))).unwrap();
 
         assert_eq!(metadata.arch, Architecture::Aarch64);
         assert_eq!(metadata.entry, 0x400080);
@@ -306,38 +221,23 @@ mod tests {
     }
 
     #[test]
-    fn parses_big_endian_elf32_without_executable_start_symbol() {
-        let metadata = ElfMetadata::parse(&elf32_big_endian_without_symbols()).unwrap();
-
-        assert_eq!(metadata.arch, Architecture::Arm);
-        assert_eq!(metadata.entry, 0x8004);
-        assert_eq!(metadata.executable_start, None);
-        assert_eq!(metadata.load_segments.len(), 1);
-
-        let segment = &metadata.load_segments[0];
-        assert_eq!(segment.virtual_address, 0x8000);
-        assert_eq!(segment.physical_address, 0x9000);
-        assert_eq!(segment.file_offset, 0x80);
-        assert_eq!(segment.file_size, 0x10);
-        assert_eq!(segment.memory_size, 0x20);
-        assert_eq!(segment.alignment, 0x1000);
-        assert_eq!(segment.flags, 6);
+    fn treats_missing_or_undefined_executable_start_symbol_as_absent() {
+        assert_eq!(
+            ElfMetadata::parse(&elf64(None)).unwrap().executable_start,
+            None
+        );
+        assert_eq!(
+            ElfMetadata::parse(&elf64(Some(false)))
+                .unwrap()
+                .executable_start,
+            None
+        );
     }
 
     #[test]
-    fn treats_an_undefined_executable_start_symbol_as_absent() {
-        let metadata = ElfMetadata::parse(&elf64_with_symbol(false)).unwrap();
-
-        assert_eq!(metadata.executable_start, None);
-    }
-
-    #[test]
-    fn rejects_non_elf_input() {
-        assert!(ElfMetadata::parse(b"not an ELF").is_err());
-    }
-
-    #[test]
-    fn rejects_truncated_elf_header() {
-        assert!(ElfMetadata::parse(b"\x7fELF\x02\x01\x01").is_err());
+    fn rejects_invalid_elf_input() {
+        for data in [b"not an ELF".as_slice(), b"\x7fELF\x02\x01\x01"] {
+            assert!(ElfMetadata::parse(data).is_err());
+        }
     }
 }

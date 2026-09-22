@@ -268,15 +268,11 @@ missing, install them with `rustup component add llvm-tools`; no `cargo-binutils
 wrapper is required. A missing tool, nonzero tool exit, or malformed ELF fails
 the build before the runner starts.
 
-In the public Rust API,
-`build::run_with_config(invocation, &BuildConfig, config_path, &CargoRunnerKind)`
-accepts the complete configuration and reads this root configuration for both
-Cargo and Custom builds. `build::prepare_with_config` completes the build, runtime
-ELF/BIN preparation, and analysis before callers load their runner configuration
-and run it. Existing `cargo_build` and `cargo_run` remain
-Cargo-only helper APIs and use the default analysis configuration. When
-constructing a `BuildConfig` literal directly, add `artifacts: Default::default()`
-or use `..Default::default()`:
+For library callers, `build::cargo_run_with_config` accepts the complete
+`BuildConfig` for Cargo builds. `build::prepare_with_config` prepares either
+build system's runtime and analysis outputs before callers load and run their
+runner configuration. Existing `cargo_build` and `cargo_run` use default analysis
+settings. Add `artifacts: Default::default()` to direct `BuildConfig` literals:
 
 ```rust
 let config = BuildConfig {

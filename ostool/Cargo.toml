@@ -53,6 +53,7 @@ schemars = { workspace = true, features = ["derive"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 serialport = "4.6"
+tempfile = "3"
 tftpd = "0.5"
 tokio = { workspace = true, features = ["full"] }
 tokio-util = { version = "0.7", features = ["compat"] }
@@ -72,7 +73,6 @@ tokio-tungstenite = { version = "0.28", features = ["rustls-tls-native-roots"] }
 tokio-serial = "5.4"
 
 [dev-dependencies]
-tempfile = "3"
 trybuild = "1"
 
 [target.'cfg(unix)'.dependencies]

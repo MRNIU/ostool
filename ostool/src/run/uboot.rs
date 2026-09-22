@@ -2542,6 +2542,7 @@ board_power_off_cmd = "power-off-board"
         crate::build::activate_build_config(
             &mut invocation,
             &BuildConfig {
+                artifacts: Default::default(),
                 system: BuildSystem::Cargo(Box::new(Cargo {
                     env: HashMap::new(),
                     target: "aarch64-unknown-none".into(),
@@ -2756,6 +2757,7 @@ baud_rate = "115200"
         crate::build::activate_build_config(
             &mut invocation,
             &BuildConfig {
+                artifacts: Default::default(),
                 system: BuildSystem::Cargo(Box::new(Cargo {
                     env: HashMap::new(),
                     target: "aarch64-unknown-none".into(),

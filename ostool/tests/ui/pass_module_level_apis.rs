@@ -37,9 +37,11 @@ fn main() {
         ..Cargo::default()
     };
     let cargo_build = BuildConfig {
+        artifacts: Default::default(),
         system: BuildSystem::Cargo(Box::new(cargo.clone())),
     };
     let custom_build = BuildConfig {
+        artifacts: Default::default(),
         system: BuildSystem::Custom(Custom {
             build_cmd: "true".into(),
             elf_path: "target/kernel.elf".into(),
@@ -88,6 +90,8 @@ fn main() {
                 .with_cargo_artifact_dir("target/aarch64/debug")
                 .strip_elf(false),
         );
+        let _ = build::prepare_with_config(&mut invocation, &custom_build, None, false).await;
+        let _ = build::run_with_config(&mut invocation, &cargo_build, None, &qemu_runner).await;
         let _ = build::cargo_run(&mut invocation, &cargo, None, &qemu_runner).await;
         let _ = build::cargo_run(&mut invocation, &cargo, None, &uboot_runner).await;
 

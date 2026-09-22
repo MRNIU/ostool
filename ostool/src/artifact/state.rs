@@ -12,19 +12,18 @@ use crate::artifact::runtime::PreparedRuntimeArtifacts;
 pub struct OutputArtifacts {
     cargo: Option<CargoArtifactState>,
     runtime: RuntimeArtifactState,
-    #[allow(dead_code)]
     debug: DebugArtifactRegistry,
 }
 
 #[derive(Clone, Debug)]
 struct CargoArtifactState {
-    #[allow(dead_code)]
     elf: PathBuf,
     artifact_dir: PathBuf,
 }
 
 #[derive(Default, Clone, Debug)]
 struct RuntimeArtifactState {
+    source_elf: Option<PathBuf>,
     elf: Option<PathBuf>,
     bin: Option<PathBuf>,
     artifact_dir: Option<PathBuf>,
@@ -118,16 +117,34 @@ impl OutputArtifacts {
 
     /// Replaces artifact state from a prepared runtime artifact set.
     pub(crate) fn apply_prepared_runtime_artifacts(&mut self, prepared: &PreparedRuntimeArtifacts) {
+        self.debug = DebugArtifactRegistry::default();
+        self.runtime.source_elf = Some(prepared.source_elf().to_path_buf());
         self.cargo = prepared
             .cargo_source_artifact_dir()
             .map(|artifact_dir| CargoArtifactState {
-                elf: prepared.elf().to_path_buf(),
+                elf: prepared.source_elf().to_path_buf(),
                 artifact_dir: artifact_dir.to_path_buf(),
             });
         self.runtime.elf = Some(prepared.elf().to_path_buf());
         self.runtime.bin = prepared.bin().map(PathBuf::from);
         self.runtime.artifact_dir = prepared.runtime_artifact_dir().map(PathBuf::from);
         self.runtime.source_artifact_dir = prepared.cargo_artifact_dir().map(PathBuf::from);
+    }
+
+    /// Returns the selected source ELF, preserving symbols lost in runtime derivatives.
+    pub(crate) fn analysis_source_elf(&self) -> Option<&Path> {
+        self.cargo_source_elf()
+            .or(self.runtime.source_elf.as_deref())
+    }
+
+    pub(crate) fn replace_debug_artifacts(&mut self, debug: DebugArtifactRegistry) {
+        self.debug = debug;
+    }
+
+    /// Adding a BIN for a runner does not select a new source ELF.
+    pub(crate) fn apply_runtime_bin(&mut self, prepared: &PreparedRuntimeArtifacts) {
+        self.runtime.bin = prepared.bin().map(PathBuf::from);
+        self.runtime.artifact_dir = prepared.runtime_artifact_dir().map(PathBuf::from);
     }
 
     #[allow(dead_code)]
@@ -140,7 +157,6 @@ impl OutputArtifacts {
         self.debug.register(kind, path);
     }
 
-    #[cfg(test)]
     pub(crate) fn cargo_source_elf(&self) -> Option<&Path> {
         self.cargo.as_ref().map(|cargo| cargo.elf.as_path())
     }

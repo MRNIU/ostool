@@ -58,27 +58,32 @@ fn rustlib_tool(rustc: &OsStr, tool: &str) -> anyhow::Result<PathBuf> {
     Ok(path)
 }
 
-fn llvm_objcopy_with_rustc(rustc: &OsStr) -> anyhow::Result<PathBuf> {
-    let path = rustlib_tool(rustc, "llvm-objcopy")?;
+fn llvm_tool_with_rustc(rustc: &OsStr, tool: &str) -> anyhow::Result<PathBuf> {
+    let path = rustlib_tool(rustc, tool)?;
     if !path.exists() {
         bail!(
-            "could not find toolchain llvm-objcopy at {}; install the Rust llvm-tools component",
-            path.display()
+            "could not find toolchain {tool} at {}; install the Rust llvm-tools component",
+            path.display(),
         );
     }
     Ok(path)
 }
 
-pub(crate) fn llvm_objcopy() -> anyhow::Result<PathBuf> {
+/// Locates an LLVM utility shipped by the active Rust toolchain.
+pub(crate) fn llvm_tool(tool: &str) -> anyhow::Result<PathBuf> {
     let rustc = rustc_program();
-    llvm_objcopy_with_rustc(&rustc)
+    llvm_tool_with_rustc(&rustc, tool)
+}
+
+pub(crate) fn llvm_objcopy() -> anyhow::Result<PathBuf> {
+    llvm_tool("llvm-objcopy")
 }
 
 #[cfg(test)]
 mod tests {
     use std::{fs, path::Path};
 
-    use super::llvm_objcopy_with_rustc;
+    use super::llvm_tool_with_rustc;
 
     #[cfg(unix)]
     fn make_executable(path: &Path) {
@@ -91,7 +96,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn missing_llvm_objcopy_error_mentions_llvm_tools_component() {
+    fn missing_llvm_tool_error_mentions_tool_and_llvm_tools_component() {
         let temp = tempfile::tempdir().unwrap();
         let sysroot = temp.path().join("sysroot");
         let fake_rustc = temp.path().join("fake-rustc");
@@ -112,10 +117,10 @@ mod tests {
         .unwrap();
         make_executable(&fake_rustc);
 
-        let err = llvm_objcopy_with_rustc(fake_rustc.as_os_str()).unwrap_err();
+        let err = llvm_tool_with_rustc(fake_rustc.as_os_str(), "llvm-readobj").unwrap_err();
         let message = err.to_string();
 
-        assert!(message.contains("could not find toolchain llvm-objcopy"));
+        assert!(message.contains("could not find toolchain llvm-readobj"));
         assert!(message.contains("install the Rust llvm-tools component"));
     }
 }

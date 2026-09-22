@@ -43,7 +43,7 @@ pub mod auth;
 /// Build system configuration and Cargo integration.
 ///
 /// Provides functionality for configuring and executing Cargo builds
-/// with custom options and target specifications.
+/// with custom options, target specifications, and optional ELF analysis artifacts.
 pub mod build;
 
 /// ostool-server board client and remote terminal integration.

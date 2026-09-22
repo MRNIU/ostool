@@ -19,7 +19,7 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::bail;
+use anyhow::{Context, bail};
 
 use crate::{
     artifact::runtime::{
@@ -37,6 +37,8 @@ use crate::{
     },
 };
 
+#[cfg(test)]
+mod analysis_tests;
 mod artifact_selector;
 pub(crate) mod config_hooks;
 pub(crate) mod config_loader;
@@ -305,6 +307,7 @@ pub async fn build_with_config(
     config: &config::BuildConfig,
     config_path: Option<&Path>,
 ) -> anyhow::Result<()> {
+    invocation.clear_debug_artifacts();
     activate_build_config(invocation, config, config_path)?;
     match &config.system {
         config::BuildSystem::Custom(custom) => build_custom(invocation, custom)?,
@@ -312,7 +315,7 @@ pub async fn build_with_config(
             cargo_build(invocation, cargo, config_path).await?;
         }
     }
-    Ok(())
+    generate_build_analysis(invocation, config)
 }
 
 /// Runs the custom build command from a build configuration.
@@ -331,6 +334,7 @@ pub fn prepare_runtime_artifact(
     invocation: &mut Invocation,
     input: RuntimeArtifactInput,
 ) -> anyhow::Result<()> {
+    invocation.clear_debug_artifacts();
     let process_context = invocation.process_context()?;
     let prepared = prepare_runtime_artifact_outputs(
         &process_context,
@@ -355,9 +359,11 @@ pub async fn cargo_build(
     config: &Cargo,
     config_path: Option<&Path>,
 ) -> anyhow::Result<CargoBuildOutput> {
+    invocation.clear_debug_artifacts();
     activate_build_config(
         invocation,
         &BuildConfig {
+            artifacts: Default::default(),
             system: BuildSystem::Cargo(Box::new(config.clone())),
         },
         config_path,
@@ -371,21 +377,54 @@ pub async fn cargo_build(
 }
 
 /// Builds or imports the configured artifact and prepares the runtime outputs.
-pub(crate) async fn prepare_runtime_artifacts(
+pub async fn prepare_with_config(
     invocation: &mut Invocation,
     config: &config::BuildConfig,
     config_path: Option<&Path>,
     debug: bool,
 ) -> anyhow::Result<()> {
+    invocation.clear_debug_artifacts();
     activate_build_config(invocation, config, config_path)?;
     match &config.system {
         config::BuildSystem::Custom(custom) => {
-            prepare_custom_runtime_artifacts(invocation, custom).await
+            prepare_custom_runtime_artifacts(invocation, custom).await?;
         }
         config::BuildSystem::Cargo(cargo) => {
-            prepare_cargo_runtime_artifacts(invocation, cargo, debug).await
+            prepare_cargo_runtime_artifacts(invocation, cargo, debug).await?;
         }
     }
+    generate_build_analysis(invocation, config)
+}
+
+fn generate_build_analysis(
+    invocation: &mut Invocation,
+    config: &BuildConfig,
+) -> anyhow::Result<()> {
+    if !config.artifacts.analysis.is_enabled() {
+        return Ok(());
+    }
+    let source = match &config.system {
+        BuildSystem::Cargo(_) => invocation
+            .runtime_artifacts()
+            .analysis_source_elf()
+            .context("Cargo build did not select an ELF for analysis")?
+            .to_path_buf(),
+        BuildSystem::Custom(custom) => {
+            let path = PathBuf::from(&custom.elf_path);
+            if path.is_absolute() {
+                path
+            } else {
+                invocation.manifest_dir().join(path)
+            }
+        }
+    };
+    let artifacts = crate::artifact::analysis::generate(
+        &invocation.process_context()?,
+        &config.artifacts.analysis,
+        &source,
+    )?;
+    invocation.replace_debug_artifacts(artifacts);
+    Ok(())
 }
 
 async fn prepare_custom_runtime_artifacts(
@@ -393,9 +432,13 @@ async fn prepare_custom_runtime_artifacts(
     config: &Custom,
 ) -> anyhow::Result<()> {
     build_custom(invocation, config)?;
-    invocation
-        .prepare_elf_artifact(config.elf_path.clone().into(), config.to_bin)
-        .await
+    let path = PathBuf::from(&config.elf_path);
+    let path = if path.is_absolute() {
+        path
+    } else {
+        invocation.manifest_dir().join(path)
+    };
+    invocation.prepare_elf_artifact(path, config.to_bin).await
 }
 
 async fn prepare_cargo_runtime_artifacts(
@@ -423,29 +466,50 @@ pub async fn cargo_run(
     config_path: Option<&Path>,
     runner: &CargoRunnerKind,
 ) -> anyhow::Result<()> {
-    activate_build_config(
+    run_with_config(
         invocation,
         &BuildConfig {
             system: BuildSystem::Cargo(Box::new(config.clone())),
+            artifacts: Default::default(),
         },
         config_path,
-    )?;
+        runner,
+    )
+    .await
+}
 
-    let debug = matches!(runner, CargoRunnerKind::Qemu(args) if args.debug);
-    let input = cargo_build_input(invocation, config, debug)?;
-    let outcome = CargoBuildPipeline::build(input, config)
-        .skip_objcopy(true)
-        .resolve_artifact_from_json(true)
-        .execute()
-        .await?;
-    apply_cargo_build_outcome(invocation, config, &outcome, true, debug)?;
-    run_cargo_post_build_cmds(invocation, config)?;
+/// Builds and runs a complete build configuration, including optional analysis.
+///
+/// Cargo-only callers may continue to use [`cargo_run`]. Analysis failures are
+/// returned before starting the runner.
+pub async fn run_with_config(
+    invocation: &mut Invocation,
+    config: &BuildConfig,
+    config_path: Option<&Path>,
+    runner: &CargoRunnerKind,
+) -> anyhow::Result<()> {
+    let debug = match &config.system {
+        BuildSystem::Cargo(_) => matches!(runner, CargoRunnerKind::Qemu(args) if args.debug),
+        BuildSystem::Custom(_) => invocation.options().debug(),
+    };
+    prepare_with_config(invocation, config, config_path, debug).await?;
 
     match runner {
         CargoRunnerKind::Qemu(args) => {
             let qemu = match &args.qemu {
                 Some(config) => config.clone(),
-                None => crate::run::qemu::ensure_config_for_cargo(invocation, config).await?,
+                None => match &config.system {
+                    BuildSystem::Cargo(cargo) => {
+                        crate::run::qemu::ensure_config_for_cargo(invocation, cargo).await?
+                    }
+                    BuildSystem::Custom(_) => {
+                        crate::run::qemu::ensure_config_in_dir(
+                            invocation,
+                            invocation.workspace_dir(),
+                        )
+                        .await?
+                    }
+                },
             };
             crate::run::qemu::run_qemu_with_debug(
                 invocation,
@@ -460,7 +524,18 @@ pub async fn cargo_run(
         CargoRunnerKind::Uboot(args) => {
             let uboot = match &args.uboot {
                 Some(config) => config.clone(),
-                None => crate::run::uboot::ensure_config_for_cargo(invocation, config).await?,
+                None => match &config.system {
+                    BuildSystem::Cargo(cargo) => {
+                        crate::run::uboot::ensure_config_for_cargo(invocation, cargo).await?
+                    }
+                    BuildSystem::Custom(_) => {
+                        crate::run::uboot::ensure_config_in_dir(
+                            invocation,
+                            invocation.workspace_dir(),
+                        )
+                        .await?
+                    }
+                },
             };
             crate::run::uboot::run_uboot(invocation, &uboot).await?;
         }
@@ -644,14 +719,15 @@ mod tests {
         prepare_runtime_artifact(
             &mut invocation,
             RuntimeArtifactInput::new(&elf_path, false)
-                .with_cargo_artifact_dir(cargo_artifact_dir.clone()),
+                .with_cargo_artifact_dir(cargo_artifact_dir.clone())
+                .strip_elf(true),
         )
         .unwrap();
 
         let expected_elf = elf_path.canonicalize().unwrap();
         assert_eq!(
             invocation.runtime_artifacts().elf(),
-            Some(expected_elf.as_path())
+            Some(elf_path.with_extension("elf").as_path())
         );
         assert!(invocation.runtime_artifacts().bin().is_none());
         assert_eq!(
@@ -688,6 +764,7 @@ mod tests {
         ))
         .unwrap();
         let config = BuildConfig {
+            artifacts: Default::default(),
             system: BuildSystem::Custom(Custom {
                 build_cmd: format!("printf built > {}", marker.display()),
                 elf_path: "target/kernel.elf".into(),
@@ -719,6 +796,7 @@ mod tests {
         let layout = resolve_project_layout(Some(temp.path().to_path_buf())).unwrap();
         let config_path = temp.path().join(".build.toml");
         let config = BuildConfig {
+            artifacts: Default::default(),
             system: BuildSystem::Cargo(Box::new(Cargo {
                 package: "placeholder".into(),
                 ..Default::default()
@@ -758,6 +836,7 @@ mod tests {
         ))
         .unwrap();
         let config = BuildConfig {
+            artifacts: Default::default(),
             system: BuildSystem::Cargo(Box::new(Cargo {
                 package: "kernel".into(),
                 ..Default::default()
@@ -787,6 +866,7 @@ mod tests {
         fs::write(temp.path().join("src/main.rs"), "fn main() {}\n").unwrap();
         let layout = resolve_project_layout(Some(temp.path().to_path_buf())).unwrap();
         let config = BuildConfig {
+            artifacts: Default::default(),
             system: BuildSystem::Custom(Custom {
                 build_cmd: "make".into(),
                 elf_path: "target/kernel.elf".into(),

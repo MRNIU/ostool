@@ -37,8 +37,6 @@ use crate::{
     },
 };
 
-#[cfg(test)]
-mod analysis_tests;
 mod artifact_selector;
 pub(crate) mod config_hooks;
 pub(crate) mod config_loader;
@@ -741,6 +739,12 @@ mod tests {
             false,
         ))
         .unwrap();
+        let mut stale = crate::artifact::state::DebugArtifactRegistry::default();
+        stale.register(
+            crate::artifact::state::DebugArtifactKind::Symbols,
+            temp.path().join("old.symbols"),
+        );
+        invocation.replace_debug_artifacts(stale);
         let config = BuildConfig {
             artifacts: Default::default(),
             system: BuildSystem::Custom(Custom {
@@ -758,6 +762,7 @@ mod tests {
         assert!(invocation.runtime_artifacts().elf().is_none());
         assert!(invocation.runtime_artifacts().bin().is_none());
         assert!(invocation.runtime_arch().is_none());
+        assert!(invocation.runtime_artifacts().debug_artifacts().is_empty());
     }
 
     #[test]

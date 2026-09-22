@@ -291,7 +291,9 @@ mod tests {
     fn prepares_stripped_elf_without_mutating_tool_state() {
         let temp = tempfile::tempdir().unwrap();
         let context = process_context(temp.path());
-        let input = copy_current_exe(temp.path());
+        let input = temp.path().join("sample.elf");
+        fs::copy(std::env::current_exe().unwrap(), &input).unwrap();
+        let source_bytes = fs::read(&input).unwrap();
 
         let prepared = prepare_runtime_artifacts(
             &context,
@@ -306,7 +308,9 @@ mod tests {
         )
         .unwrap();
 
-        let expected_elf = input.with_file_name("sample.elf");
+        let expected_elf = input.with_file_name("sample.elf.runtime.elf");
+        assert_eq!(prepared.source_elf(), input.canonicalize().unwrap());
+        assert!(fs::read(&input).unwrap() == source_bytes);
         assert_eq!(prepared.elf(), expected_elf);
         assert!(prepared.bin().is_none());
         assert_eq!(

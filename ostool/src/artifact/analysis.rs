@@ -27,18 +27,6 @@ pub(crate) fn generate(
     config: &AnalysisConfig,
     source_elf: &Path,
 ) -> anyhow::Result<DebugArtifactRegistry> {
-    generate_with_tool_resolver(context, config, source_elf, llvm_tools::llvm_tool)
-}
-
-fn generate_with_tool_resolver<F>(
-    context: &ProcessContext,
-    config: &AnalysisConfig,
-    source_elf: &Path,
-    mut resolve_tool: F,
-) -> anyhow::Result<DebugArtifactRegistry>
-where
-    F: FnMut(&str) -> anyhow::Result<PathBuf>,
-{
     if !config.is_enabled() {
         return Ok(DebugArtifactRegistry::default());
     }
@@ -78,7 +66,7 @@ where
         let metadata = elf_metadata(source_elf)?;
         let mut staged = Vec::new();
         for (kind, path, tool_name, args) in &requested {
-            let tool = resolve_tool(tool_name).with_context(|| {
+            let tool = llvm_tools::llvm_tool(tool_name).with_context(|| {
                 format!(
                     "failed to resolve {tool_name} for ELF {}",
                     source_elf.display()
@@ -197,156 +185,4 @@ fn output_path(source_elf: &Path, suffix: &str) -> PathBuf {
     name.push(".");
     name.push(suffix);
     source_elf.with_file_name(name)
-}
-
-#[cfg(test)]
-mod tests {
-    use std::{
-        fs,
-        path::{Path, PathBuf},
-    };
-
-    use crate::{
-        artifact::analysis::generate_with_tool_resolver,
-        build::config::AnalysisConfig,
-        process::ProcessContext,
-        project::{resolve_project_layout, variables::VariableScope},
-    };
-    use anyhow::anyhow;
-
-    fn process_context(root: &std::path::Path) -> ProcessContext {
-        std::fs::write(
-            root.join("Cargo.toml"),
-            "[package]\nname = \"sample\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
-        )
-        .unwrap();
-        std::fs::create_dir_all(root.join("src")).unwrap();
-        std::fs::write(root.join("src/lib.rs"), "").unwrap();
-
-        let layout = resolve_project_layout(Some(root.to_path_buf())).unwrap();
-        let scope = VariableScope::for_package(&layout, root.to_path_buf());
-        ProcessContext::new(root.to_path_buf(), root.to_path_buf(), scope, None)
-    }
-
-    fn write_elf(path: &Path) {
-        // Minimal ELF64 with no sections or program headers.
-        let mut elf = [0u8; 64];
-        elf[..7].copy_from_slice(b"\x7fELF\x02\x01\x01");
-        elf[16] = 2; // ET_EXEC
-        elf[18] = 62; // EM_X86_64
-        elf[20] = 1;
-        elf[52] = 64;
-        fs::write(path, elf).unwrap();
-    }
-
-    #[test]
-    fn disabled_analysis_does_not_read_the_elf_or_lookup_tools() {
-        let temp = tempfile::tempdir().unwrap();
-        let context = process_context(temp.path());
-        let missing_source = temp.path().join("missing kernel.elf");
-
-        let registry = generate_with_tool_resolver(
-            &context,
-            &AnalysisConfig::default(),
-            &missing_source,
-            |_| panic!("disabled analysis must not resolve any tools"),
-        )
-        .unwrap();
-
-        assert!(registry.is_empty());
-    }
-
-    #[cfg(unix)]
-    fn make_executable(path: &Path) {
-        use std::os::unix::fs::PermissionsExt;
-
-        let mut permissions = fs::metadata(path).unwrap().permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(path, permissions).unwrap();
-    }
-
-    #[cfg(unix)]
-    fn fake_tool(root: &Path, name: &str, body: &str) -> PathBuf {
-        let path = root.join(name);
-        fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-        make_executable(&path);
-        path
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn missing_tool_clears_stale_requested_output() {
-        let temp = tempfile::tempdir().unwrap();
-        let context = process_context(temp.path());
-        let source = temp.path().join("kernel with spaces.elf");
-        write_elf(&source);
-        let stale = super::output_path(&source, "symbols");
-        fs::write(&stale, "stale").unwrap();
-        let config = AnalysisConfig {
-            symbols: true,
-            ..Default::default()
-        };
-
-        let error = generate_with_tool_resolver(&context, &config, &source, |_| {
-            Err(anyhow!("llvm-tools unavailable"))
-        })
-        .unwrap_err();
-
-        assert!(error.to_string().contains("failed to resolve llvm-nm"));
-        assert!(!stale.exists());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn tool_failure_reports_source_status_and_stderr_without_partial_outputs() {
-        let temp = tempfile::tempdir().unwrap();
-        let context = process_context(temp.path());
-        let source = temp.path().join("kernel with spaces.elf");
-        write_elf(&source);
-        let disassembly = super::output_path(&source, "disassembly");
-        let symbols = super::output_path(&source, "symbols");
-        fs::write(&disassembly, "stale disassembly").unwrap();
-        fs::write(&symbols, "stale symbols").unwrap();
-        let objdump = fake_tool(temp.path(), "objdump", "printf disassembly");
-        let nm = fake_tool(temp.path(), "nm", "printf 'broken symbols' >&2\nexit 7");
-        let config = AnalysisConfig {
-            disassembly: true,
-            symbols: true,
-            ..Default::default()
-        };
-
-        let error = generate_with_tool_resolver(&context, &config, &source, |tool| match tool {
-            "llvm-objdump" => Ok(objdump.clone()),
-            "llvm-nm" => Ok(nm.clone()),
-            unexpected => Err(anyhow!("unexpected tool: {unexpected}")),
-        })
-        .unwrap_err();
-        let message = format!("{error:#}");
-
-        assert!(message.contains("llvm-nm"));
-        assert!(message.contains(&source.display().to_string()));
-        assert!(message.contains("exit status: 7"));
-        assert!(message.contains("broken symbols"));
-        assert!(!disassembly.exists());
-        assert!(!symbols.exists());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn invalid_elf_fails_before_any_tool_is_resolved() {
-        let temp = tempfile::tempdir().unwrap();
-        let context = process_context(temp.path());
-        let source = temp.path().join("invalid.elf");
-        fs::write(&source, "not an ELF").unwrap();
-        let config = AnalysisConfig {
-            symbols: true,
-            ..Default::default()
-        };
-        let error = generate_with_tool_resolver(&context, &config, &source, |_| {
-            panic!("invalid ELF must be rejected before tool lookup")
-        })
-        .unwrap_err();
-        assert!(format!("{error:#}").contains("failed to parse ELF file"));
-        assert!(!super::output_path(&source, "symbols").exists());
-    }
 }

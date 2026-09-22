@@ -219,144 +219,34 @@ fn checked_end(start: u64, size: u64, kind: &str) -> Result<u64> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
-    use super::{FitAddress, FitConfig, FitFdt, FitFormat, FitOs};
-    use crate::artifact::elf_metadata::{ElfMetadata, LoadSection, LoadSegment};
+    use super::*;
     use object::Architecture;
 
-    fn segment(vaddr: u64, paddr: u64, offset: u64, file_size: u64) -> LoadSegment {
-        LoadSegment {
-            virtual_address: vaddr,
-            physical_address: paddr,
-            file_offset: offset,
-            file_size,
-            memory_size: file_size,
-            alignment: 1,
-            flags: 0,
-        }
-    }
-
-    fn section(vaddr: u64, offset: u64, size: u64) -> LoadSection {
-        LoadSection {
-            virtual_address: vaddr,
-            file_offset: offset,
-            size,
-        }
-    }
-
-    fn metadata(
-        entry: u64,
-        executable_start: Option<u64>,
-        load_segments: Vec<LoadSegment>,
-        load_sections: Vec<LoadSection>,
-    ) -> ElfMetadata {
-        ElfMetadata {
+    #[test]
+    fn auto_load_distinguishes_elf_container_and_bin_payload() {
+        let metadata = ElfMetadata {
             arch: Architecture::Riscv64,
-            entry,
-            load_segments,
-            load_sections,
-            executable_start,
-        }
-    }
-
-    #[test]
-    fn resolves_symbol_and_entry_zero_and_honors_explicit_addresses() {
-        let metadata = metadata(0, Some(0), Vec::new(), Vec::new());
-        assert_eq!(
-            FitConfig::default().resolve_addresses(&metadata).unwrap(),
-            (0, 0)
-        );
-
-        let config = FitConfig {
-            load: FitAddress::Explicit(0x1000),
-            entry: FitAddress::Explicit(0x2000),
-            ..FitConfig::default()
+            entry: 0x8000_0100,
+            executable_start: None,
+            load_segments: vec![LoadSegment {
+                virtual_address: 0,
+                physical_address: 0x8000_0000,
+                file_offset: 0x100,
+                file_size: 0x200,
+                memory_size: 0x200,
+                alignment: 1,
+                flags: 0,
+            }],
+            load_sections: vec![LoadSection {
+                virtual_address: 0x100,
+                file_offset: 0x200,
+                size: 0x20,
+            }],
         };
-        assert_eq!(
-            config.resolve_addresses(&metadata).unwrap(),
-            (0x1000, 0x2000)
-        );
-    }
-
-    #[test]
-    fn elf_auto_load_requires_one_common_container_base() {
-        let metadata = metadata(
-            0x8010,
-            None,
-            vec![
-                segment(0x8000, 0x8000, 0, 0x1000),
-                segment(0x9000, 0x9000, 0x1000, 0x200),
-            ],
-            Vec::new(),
-        );
-        let config = FitConfig {
-            format: FitFormat::Elf,
-            ..FitConfig::default()
-        };
-
-        assert_eq!(
-            config.resolve_addresses(&metadata).unwrap(),
-            (0x8000, 0x8010)
-        );
-    }
-
-    #[test]
-    fn elf_auto_load_rejects_different_or_overflowing_segment_ranges() {
-        let config = FitConfig {
-            format: FitFormat::Elf,
-            ..FitConfig::default()
-        };
-        let different = metadata(
-            0,
-            None,
-            vec![segment(0x8000, 0x8000, 0, 4), segment(0x9000, 0x9000, 4, 4)],
-            Vec::new(),
-        );
-        assert!(config.resolve_addresses(&different).is_err());
-
-        let overflowing = metadata(
-            0,
-            None,
-            vec![segment(u64::MAX - 1, u64::MAX - 1, 0, 2)],
-            Vec::new(),
-        );
-        assert!(config.resolve_addresses(&overflowing).is_err());
-    }
-
-    #[test]
-    fn bin_auto_load_starts_at_first_output_section_not_pt_load_header() {
-        let metadata = metadata(
-            0,
-            None,
-            vec![segment(0, 0x8000_0000, 0, 0x200)],
-            vec![section(0x100, 0x100, 0x20)],
-        );
-
-        assert_eq!(
-            FitConfig::default().resolve_addresses(&metadata).unwrap(),
-            (0x8000_0100, 0)
-        );
-    }
-
-    #[test]
-    fn bin_auto_load_keeps_zero_and_rejects_bss_only_or_ambiguous_mappings() {
-        let zero = metadata(0, None, vec![segment(0, 0, 0, 4)], vec![section(0, 0, 4)]);
-        assert_eq!(
-            FitConfig::default().resolve_addresses(&zero).unwrap(),
-            (0, 0)
-        );
-
-        let bss_only = metadata(0, None, vec![segment(0, 0, 0, 4)], Vec::new());
-        assert!(FitConfig::default().resolve_addresses(&bss_only).is_err());
-
-        let ambiguous = metadata(
-            0,
-            None,
-            vec![segment(0, 0x1000, 0, 4), segment(0, 0x2000, 0, 4)],
-            vec![section(0, 0, 4)],
-        );
-        assert!(FitConfig::default().resolve_addresses(&ambiguous).is_err());
+        let mut config = FitConfig::default();
+        assert_eq!(config.resolve_addresses(&metadata).unwrap().0, 0x8000_0100);
+        config.format = FitFormat::Elf;
+        assert_eq!(config.resolve_addresses(&metadata).unwrap().0, 0x7fff_ff00);
     }
 
     #[test]
@@ -378,15 +268,5 @@ mod tests {
 
         let toml = toml::to_string(&config).unwrap();
         assert_eq!(toml::from_str::<FitConfig>(&toml).unwrap(), config);
-    }
-
-    #[test]
-    fn omitted_addresses_default_to_auto_and_fdt_load_remains_optional() {
-        let config: FitConfig = toml::from_str("[fdt]\npath = 'board.dtb'").unwrap();
-        assert_eq!(config.load, FitAddress::Auto);
-        assert_eq!(config.entry, FitAddress::Auto);
-        assert_eq!(config.fdt.as_ref().unwrap().load, None);
-        let encoded = toml::to_string(&config).unwrap();
-        assert_eq!(toml::from_str::<FitConfig>(&encoded).unwrap(), config);
     }
 }

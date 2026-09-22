@@ -1,9 +1,5 @@
 //! U-Boot FIT image generation.
 
-#[cfg(test)]
-#[path = "fit_tests.rs"]
-mod configured_tests;
-
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;

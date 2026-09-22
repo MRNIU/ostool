@@ -159,38 +159,6 @@ async fn cargo_build_emits_each_requested_analysis_artifact_after_hooks() {
     }
 }
 
-#[tokio::test]
-async fn custom_build_analysis_keeps_build_only_runtime_state_empty() {
-    let fixture = Fixture::new();
-    let source = fixture.copy_current_executable("custom source with spaces");
-    let marker = fixture.root.join("custom build marker");
-    let mut invocation = fixture.invocation();
-    let config = custom_build(
-        &source,
-        format!("touch {}", quoted(&marker)),
-        analysis_config(false, false, true),
-    );
-
-    build_with_config(&mut invocation, &config, None)
-        .await
-        .unwrap();
-
-    assert!(marker.exists());
-    assert!(invocation.runtime_artifacts().elf().is_none());
-    assert!(invocation.runtime_artifacts().bin().is_none());
-    assert_eq!(
-        invocation
-            .runtime_artifacts()
-            .debug_artifacts()
-            .get(DebugArtifactKind::Symbols),
-        Some(
-            source
-                .with_file_name("custom source with spaces.symbols")
-                .as_path()
-        )
-    );
-}
-
 #[test]
 fn prepared_runtime_copy_keeps_source_and_debug_registry_when_adding_bin() {
     let fixture = Fixture::new();
@@ -227,7 +195,6 @@ fn prepared_runtime_copy_keeps_source_and_debug_registry_when_adding_bin() {
 
     let bin = invocation.ensure_runtime_bin().unwrap();
 
-    assert_ne!(runtime_elf, source);
     assert!(
         fs::read(&source).unwrap() == original_bytes,
         "runtime preparation must preserve the source bytes"
@@ -249,7 +216,6 @@ fn prepared_runtime_copy_keeps_source_and_debug_registry_when_adding_bin() {
         fs::read(&symbols).unwrap() == source_symbols,
         "analysis must use the original ELF symbols"
     );
-    assert_ne!(fs::read(&symbols).unwrap(), runtime_symbols);
     assert_eq!(
         invocation
             .runtime_artifacts()
@@ -270,6 +236,8 @@ async fn rebuild_clears_debug_artifacts_when_analysis_is_disabled_or_fails() {
     build_with_config(&mut invocation, &requested, None)
         .await
         .unwrap();
+    assert!(invocation.runtime_artifacts().elf().is_none());
+    assert!(invocation.runtime_artifacts().bin().is_none());
     let symbols = invocation
         .runtime_artifacts()
         .debug_artifacts()

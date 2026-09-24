@@ -229,6 +229,34 @@ to_bin = false
 命令行 `--package`/`--bin`/`--test` 会先覆盖 `.build.toml` 中的 Cargo 包/目标选择，再用于
 `${package}` 变量展开和 someboot `build-info.toml` 自动参数注入。
 
+#### ELF 分析产物
+
+在 `.build.toml` 根级启用需要的分析产物。三个开关均默认为 `false`；未启用时不会调用分析工具，也不会登记分析文件。
+
+```toml
+[artifacts.analysis]
+disassembly = true
+elf_info = true
+symbols = true
+```
+
+分析在既有的构建后钩子完成后执行，并始终读取同一个保留的原始 ELF：Cargo 构建使用 Cargo 解析出的已选可执行文件（因此会遵循 `package`、`bin`、`test` 和 `profile`），自定义构建使用 `elf_path`。Cargo 的运行时产物可能已完成复制或转换，但分析仍使用该原始源文件，因此三类分析产物描述的是原始输入，而不是运行时副本。
+
+文件与该原始 ELF 放在同一目录，且在完整源文件名后追加稳定后缀：`<ELF>.disassembly`、`<ELF>.elf-info` 和 `<ELF>.symbols`。它们不受 `--bin-dir` 影响。每次构建都会重新生成当前请求的文件并刷新本次产物登记；后来关闭某一开关不会删除磁盘上已有的对应文件。
+
+`elf-info` 给出从 ELF 对象解析出的架构、入口地址、各 `PT_LOAD` 段（包含物理和虚拟地址），以及存在时的 `__executable_start`，并附加 `llvm-readobj` 的详细输出。若 ELF 没有需要的符号，会在输出中明确说明而不是使构建失败。
+
+这些功能使用现有 Rust 工具链中的 LLVM 工具；若缺少它们，运行 `rustup component add llvm-tools` 安装。无需安装 `cargo-binutils` 包装器。工具缺失、工具返回非零，或输入不是可解析的 ELF 时，构建会在启动 runner 前失败。
+
+库调用方可通过 `build::cargo_run_with_config` 为 Cargo 构建传入完整 `BuildConfig`。`build::prepare_with_config` 为两种构建系统准备运行时与分析产物，随后由调用方加载 runner 配置并运行。既有 `cargo_build` 与 `cargo_run` 使用默认分析配置。直接构造 `BuildConfig` 时添加 `artifacts: Default::default()`：
+
+```rust
+let config = BuildConfig {
+    system,
+    artifacts: Default::default(),
+};
+```
+
 #### 自定义构建系统示例
 
 ```toml

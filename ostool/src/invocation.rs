@@ -8,7 +8,7 @@ use object::Architecture;
 use crate::{
     artifact::{
         runtime::{PreparedRuntimeArtifacts, RuntimeArtifactOptions, prepare_runtime_artifacts},
-        state::OutputArtifacts,
+        state::{DebugArtifactRegistry, OutputArtifacts},
     },
     process::ProcessContext,
     project::{ProjectLayout, resolve_project_layout, variables::VariableScope},
@@ -164,6 +164,16 @@ impl Invocation {
         self.state.apply_prepared_runtime_artifacts(&prepared);
     }
 
+    pub(crate) fn clear_debug_artifacts(&mut self) {
+        self.state
+            .artifacts
+            .replace_debug_artifacts(DebugArtifactRegistry::default());
+    }
+
+    pub(crate) fn replace_debug_artifacts(&mut self, artifacts: DebugArtifactRegistry) {
+        self.state.artifacts.replace_debug_artifacts(artifacts);
+    }
+
     pub(crate) fn ensure_runtime_bin(&mut self) -> anyhow::Result<PathBuf> {
         if let Some(bin) = self.runtime_artifacts().bin() {
             debug!("BIN file already exists: {bin:?}");
@@ -194,7 +204,7 @@ impl Invocation {
             .bin()
             .ok_or_else(|| anyhow!("bin not exist after conversion"))?
             .to_path_buf();
-        self.apply_prepared_runtime_artifacts(prepared);
+        self.state.artifacts.apply_runtime_bin(&prepared);
         Ok(bin_path)
     }
 
@@ -205,6 +215,7 @@ impl Invocation {
         path: PathBuf,
         to_bin: bool,
     ) -> anyhow::Result<()> {
+        self.clear_debug_artifacts();
         let process_context = self.process_context()?;
         let prepared = prepare_runtime_artifacts(
             &process_context,

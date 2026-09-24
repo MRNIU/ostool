@@ -401,8 +401,7 @@ pub async fn run_board(
     board_config: &BoardRunConfig,
     options: RunBoardOptions,
 ) -> anyhow::Result<()> {
-    crate::build::prepare_runtime_artifacts(invocation, build_config, build_config_path, false)
-        .await?;
+    crate::build::prepare_with_config(invocation, build_config, build_config_path, false).await?;
     run_prepared_board(invocation, board_config, options).await
 }
 
@@ -419,6 +418,7 @@ pub async fn cargo_run_board(
     run_board(
         invocation,
         &BuildConfig {
+            artifacts: Default::default(),
             system: BuildSystem::Cargo(Box::new(cargo.clone())),
         },
         build_config_path,

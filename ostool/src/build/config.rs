@@ -35,13 +35,45 @@ fn is_false(value: &bool) -> bool {
 pub struct BuildConfig {
     /// The build system configuration.
     pub system: BuildSystem,
+    /// Optional derived artifacts generated beside the built ELF.
+    #[serde(default)]
+    pub artifacts: ArtifactConfig,
 }
 
 impl Default for BuildConfig {
     fn default() -> Self {
         Self {
             system: BuildSystem::Cargo(Box::default()),
+            artifacts: ArtifactConfig::default(),
         }
+    }
+}
+
+/// Derived artifacts emitted for a completed build.
+#[derive(Default, Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct ArtifactConfig {
+    /// ELF analysis artifacts.
+    #[serde(default)]
+    pub analysis: AnalysisConfig,
+}
+
+/// Selects human-readable analysis artifacts to generate from an ELF.
+#[derive(Default, Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct AnalysisConfig {
+    /// Generate a disassembly with `llvm-objdump`.
+    #[serde(default)]
+    pub disassembly: bool,
+    /// Generate ELF metadata and `llvm-readobj` output.
+    #[serde(default)]
+    pub elf_info: bool,
+    /// Generate a symbol listing with `llvm-nm`.
+    #[serde(default)]
+    pub symbols: bool,
+}
+
+impl AnalysisConfig {
+    pub(crate) fn is_enabled(&self) -> bool {
+        self.disassembly || self.elf_info || self.symbols
     }
 }
 
@@ -169,6 +201,25 @@ pub enum LogLevel {
 #[cfg(test)]
 mod tests {
     use super::{Cargo, Custom};
+
+    #[test]
+    fn legacy_build_configs_and_analysis_flags_parse_with_defaults() {
+        let legacy = "[system.Custom]\nbuild_cmd = \"make\"\nelf_path = \"kernel.elf\"\n";
+        let config: super::BuildConfig = toml::from_str(legacy).unwrap();
+        assert!(!config.artifacts.analysis.is_enabled());
+        let enabled = format!(
+            "{legacy}\n[artifacts.analysis]\ndisassembly = true\nelf_info = true\nsymbols = true\n"
+        );
+        let config: super::BuildConfig = toml::from_str(&enabled).unwrap();
+        assert!(config.artifacts.analysis.disassembly);
+        assert!(config.artifacts.analysis.elf_info);
+        assert!(config.artifacts.analysis.symbols);
+        let partial: super::BuildConfig =
+            toml::from_str(&format!("{legacy}\n[artifacts.analysis]\nsymbols = true\n")).unwrap();
+        assert!(!partial.artifacts.analysis.disassembly);
+        assert!(!partial.artifacts.analysis.elf_info);
+        assert!(partial.artifacts.analysis.symbols);
+    }
 
     #[test]
     fn cargo_config_defaults_someboot_injection_to_enabled_when_field_is_absent() {

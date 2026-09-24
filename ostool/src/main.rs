@@ -378,27 +378,22 @@ async fn try_main() -> Result<()> {
                             debug,
                             dtb_dump,
                         });
-                        build::cargo_run(
+                        build::cargo_run_with_config(
                             &mut invocation,
-                            config,
+                            &loaded_build_config.config,
                             Some(loaded_build_config.path.as_path()),
                             &kind,
                         )
                         .await?;
                     }
-                    build::config::BuildSystem::Custom(custom_cfg) => {
-                        build::build_with_config(
+                    build::config::BuildSystem::Custom(_) => {
+                        build::prepare_with_config(
                             &mut invocation,
                             &loaded_build_config.config,
                             Some(loaded_build_config.path.as_path()),
+                            false,
                         )
                         .await?;
-                        invocation
-                            .prepare_elf_artifact(
-                                custom_cfg.elf_path.clone().into(),
-                                custom_cfg.to_bin,
-                            )
-                            .await?;
                         let qemu_config =
                             load_qemu_config(&mut invocation, qemu.qemu_config.as_deref()).await?;
                         ostool::run::qemu::run_qemu(
@@ -442,27 +437,22 @@ async fn try_main() -> Result<()> {
                         let kind = CargoRunnerKind::new_uboot(CargoUbootRunnerArgs {
                             uboot: uboot_config,
                         });
-                        build::cargo_run(
+                        build::cargo_run_with_config(
                             &mut invocation,
-                            config,
+                            &loaded_build_config.config,
                             Some(loaded_build_config.path.as_path()),
                             &kind,
                         )
                         .await?;
                     }
-                    build::config::BuildSystem::Custom(custom_cfg) => {
-                        build::build_with_config(
+                    build::config::BuildSystem::Custom(_) => {
+                        build::prepare_with_config(
                             &mut invocation,
                             &loaded_build_config.config,
                             Some(loaded_build_config.path.as_path()),
+                            false,
                         )
                         .await?;
-                        invocation
-                            .prepare_elf_artifact(
-                                custom_cfg.elf_path.clone().into(),
-                                custom_cfg.to_bin,
-                            )
-                            .await?;
                         let uboot_config =
                             load_uboot_config(&mut invocation, uboot.uboot_config.as_deref())
                                 .await?;
@@ -971,6 +961,7 @@ mod tests {
     fn apply_cargo_selector_overrides_cargo_build_config() {
         let (_temp, mut invocation) = test_invocation();
         let mut build_config = build::config::BuildConfig {
+            artifacts: Default::default(),
             system: build::config::BuildSystem::Cargo(Box::new(build::config::Cargo {
                 package: "default-package".into(),
                 bin: None,
@@ -1004,6 +995,7 @@ mod tests {
     fn apply_cargo_selector_rejects_custom_build_config() {
         let (_temp, mut invocation) = test_invocation();
         let mut build_config = build::config::BuildConfig {
+            artifacts: Default::default(),
             system: build::config::BuildSystem::Custom(build::config::Custom {
                 build_cmd: "make".into(),
                 elf_path: "target/kernel.elf".into(),
@@ -1033,6 +1025,7 @@ mod tests {
     fn apply_cargo_selector_overrides_test_target() {
         let (_temp, mut invocation) = test_invocation();
         let mut build_config = build::config::BuildConfig {
+            artifacts: Default::default(),
             system: build::config::BuildSystem::Cargo(Box::new(build::config::Cargo {
                 package: "default-package".into(),
                 bin: Some("old-bin".into()),
@@ -1102,6 +1095,7 @@ dtb_file = "${package}/board.dtb"
         let mut invocation =
             Invocation::new(InvocationOptions::new(Some(app_dir), None, None, false)).unwrap();
         let mut build_config = build::config::BuildConfig {
+            artifacts: Default::default(),
             system: build::config::BuildSystem::Cargo(Box::new(build::config::Cargo {
                 package: "app".into(),
                 target: "aarch64-unknown-none".into(),

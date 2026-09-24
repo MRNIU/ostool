@@ -232,6 +232,55 @@ Command-line `--package`/`--bin`/`--test` overrides are applied to the final Car
 selection before `${package}` variable expansion and someboot `build-info.toml`
 argument injection.
 
+#### ELF Analysis Artifacts
+
+Enable the analysis outputs you need at the root of `.build.toml`. All three
+switches default to `false`; when disabled, ostool invokes no analysis tools and
+registers no analysis files.
+
+```toml
+[artifacts.analysis]
+disassembly = true
+elf_info = true
+symbols = true
+```
+
+Analysis runs after the existing post-build hooks and always reads the same
+preserved original ELF. For Cargo builds, this is Cargo's selected executable, so
+it honors `package`, `bin`, `test`, and `profile`; for custom builds, it is
+`elf_path`. Cargo may already have copied or converted a runtime artifact, but
+analysis still uses this original source, so all three outputs describe the
+original input rather than a runtime copy.
+
+Files are written beside that original ELF with stable suffixes appended to its
+full source filename: `<ELF>.disassembly`, `<ELF>.elf-info`, and
+`<ELF>.symbols`. They are independent of `--bin-dir`. Each build regenerates the
+requested files and refreshes this build's artifact registry; disabling a switch
+later does not delete an older corresponding file from disk.
+
+`elf-info` reports the architecture and entry address parsed from the ELF object, every `PT_LOAD`
+entry (including physical and virtual addresses), an optional
+`__executable_start`, and detailed `llvm-readobj` output. If the ELF has no
+needed symbol, the output says so explicitly and the build still succeeds.
+
+This feature uses LLVM tools from the existing Rust toolchain. If they are
+missing, install them with `rustup component add llvm-tools`; no `cargo-binutils`
+wrapper is required. A missing tool, nonzero tool exit, or malformed ELF fails
+the build before the runner starts.
+
+For library callers, `build::cargo_run_with_config` accepts the complete
+`BuildConfig` for Cargo builds. `build::prepare_with_config` prepares either
+build system's runtime and analysis outputs before callers load and run their
+runner configuration. Existing `cargo_build` and `cargo_run` use default analysis
+settings. Add `artifacts: Default::default()` to direct `BuildConfig` literals:
+
+```rust
+let config = BuildConfig {
+    system,
+    artifacts: Default::default(),
+};
+```
+
 #### Custom Build System Example
 
 ```toml

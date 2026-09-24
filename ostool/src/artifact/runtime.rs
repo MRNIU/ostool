@@ -33,6 +33,7 @@ pub(crate) struct RuntimeArtifactOptions {
 
 /// Runtime artifacts prepared from a single input ELF.
 pub(crate) struct PreparedRuntimeArtifacts {
+    source_elf: PathBuf,
     elf: PathBuf,
     bin: Option<PathBuf>,
     source_artifact_dir: PathBuf,
@@ -42,6 +43,11 @@ pub(crate) struct PreparedRuntimeArtifacts {
 }
 
 impl PreparedRuntimeArtifacts {
+    /// Returns the original input, before runtime copying or stripping.
+    pub(crate) fn source_elf(&self) -> &Path {
+        &self.source_elf
+    }
+
     /// Returns the runtime ELF path.
     pub(crate) fn elf(&self) -> &Path {
         &self.elf
@@ -93,10 +99,11 @@ pub(crate) fn prepare_runtime_artifacts(
     let runtime_elf = if options.strip_elf {
         strip_runtime_elf(context, &input_elf, arch)?
     } else {
-        input_elf
+        input_elf.clone()
     };
 
     let mut prepared = PreparedRuntimeArtifacts {
+        source_elf: input_elf,
         elf: runtime_elf.clone(),
         bin: None,
         source_artifact_dir: input_dir,
@@ -126,7 +133,7 @@ fn strip_runtime_elf(
     elf_path: &Path,
     arch: Architecture,
 ) -> anyhow::Result<PathBuf> {
-    let stripped_elf_path = elf_path.with_file_name(
+    let mut stripped_elf_path = elf_path.with_file_name(
         elf_path
             .file_stem()
             .ok_or_else(|| anyhow!("invalid ELF file path: {}", elf_path.display()))?
@@ -134,6 +141,11 @@ fn strip_runtime_elf(
             .to_string()
             + ".elf",
     );
+    if stripped_elf_path == elf_path {
+        let mut name = elf_path.as_os_str().to_os_string();
+        name.push(".runtime.elf");
+        stripped_elf_path = PathBuf::from(name);
+    }
     println!(
         "{}",
         format!(
@@ -279,7 +291,9 @@ mod tests {
     fn prepares_stripped_elf_without_mutating_tool_state() {
         let temp = tempfile::tempdir().unwrap();
         let context = process_context(temp.path());
-        let input = copy_current_exe(temp.path());
+        let input = temp.path().join("sample.elf");
+        fs::copy(std::env::current_exe().unwrap(), &input).unwrap();
+        let source_bytes = fs::read(&input).unwrap();
 
         let prepared = prepare_runtime_artifacts(
             &context,
@@ -294,7 +308,9 @@ mod tests {
         )
         .unwrap();
 
-        let expected_elf = input.with_file_name("sample.elf");
+        let expected_elf = input.with_file_name("sample.elf.runtime.elf");
+        assert_eq!(prepared.source_elf(), input.canonicalize().unwrap());
+        assert!(fs::read(&input).unwrap() == source_bytes);
         assert_eq!(prepared.elf(), expected_elf);
         assert!(prepared.bin().is_none());
         assert_eq!(

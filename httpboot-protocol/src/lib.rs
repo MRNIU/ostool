@@ -8,7 +8,10 @@ use core::{fmt, str::FromStr};
 #[cfg(feature = "alloc")]
 use alloc::{string::String, vec::Vec};
 
-pub const PROTOCOL_VERSION: u16 = 3;
+pub const PROTOCOL_VERSION: u16 = 4;
+/// Loader-hosted HTTP protocol. v2-v4 remain valid for server-hosted polling.
+pub const DEVICE_PROTOCOL_VERSION: u16 = 5;
+pub const PREVIOUS_PROTOCOL_VERSION: u16 = 3;
 pub const LEGACY_PROTOCOL_VERSION: u16 = 2;
 pub const MAX_HOST_CMDLINE_BYTES: usize = 4095;
 pub const MAX_HTTP_BOOT_INITRAMFS_BYTES: usize = 256 * 1024 * 1024;
@@ -166,6 +169,68 @@ pub struct LoaderDiscoveryProbe {
     pub loader_version: String,
 }
 
+/// A v5 loader advertises its own HTTP endpoint without registering with a server.
+#[cfg(feature = "alloc")]
+#[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoaderAnnouncement {
+    pub protocol_version: u16,
+    pub mac_address: MacAddress,
+    pub current_mac_address: MacAddress,
+    pub arch: BootArch,
+    pub loader_version: String,
+    pub boot_epoch: String,
+    pub http_port: u16,
+}
+
+/// The caller owns the boot ID; the loader owns the current boot epoch.
+#[cfg(feature = "alloc")]
+#[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceBootJob {
+    pub boot_id: String,
+    pub arch: BootArch,
+    pub image_format: ImageFormat,
+    pub kernel: DeviceBootImage,
+    pub initramfs: Option<DeviceBootImage>,
+    pub cmdline: Option<String>,
+    pub entry_symbol: Option<String>,
+}
+
+#[cfg(feature = "alloc")]
+#[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceBootImage {
+    pub size: u64,
+    pub sha256: String,
+}
+
+#[cfg(feature = "alloc")]
+#[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceBootStatus {
+    pub boot_id: String,
+    pub phase: String,
+    pub kernel_received: bool,
+    pub initramfs_received: bool,
+    pub last_error: Option<String>,
+}
+
+#[cfg(feature = "alloc")]
+#[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoaderDeviceStatus {
+    pub protocol_version: u16,
+    pub boot_epoch: String,
+    pub mac_address: MacAddress,
+    pub current_mac_address: MacAddress,
+    pub arch: BootArch,
+    pub loader_version: String,
+    pub hardware: LoaderHardwareInfo,
+    pub boot: Option<DeviceBootStatus>,
+    pub ota: Option<LoaderOtaState>,
+}
+
 #[cfg(feature = "alloc")]
 #[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -189,6 +254,43 @@ pub struct LoaderPollRequest {
     pub arch: BootArch,
     pub loader_version: String,
     pub hardware: LoaderHardwareInfo,
+    /// Present only for OTA-aware loaders (protocol v4).
+    #[cfg_attr(
+        feature = "json",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub ota: Option<LoaderOtaState>,
+}
+
+#[cfg(feature = "alloc")]
+#[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoaderOtaState {
+    pub active_sha256: String,
+    pub running_sha256: String,
+    pub pending_update_id: Option<String>,
+    /// A pending image is runnable only after its attempt record was flushed.
+    pub trial: bool,
+    pub source: Option<OtaSource>,
+    pub last_update_id: Option<String>,
+    pub last_outcome: Option<OtaOutcome>,
+}
+
+#[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "json", serde(rename_all = "snake_case"))]
+pub enum OtaSource {
+    Direct,
+    Server,
+}
+
+#[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "json", serde(rename_all = "snake_case"))]
+pub enum OtaOutcome {
+    Confirmed,
+    RolledBack,
+    Failed,
 }
 
 #[cfg(feature = "alloc")]
@@ -199,6 +301,17 @@ pub enum LoaderPollResponse {
     Unbound,
     BoundIdle {
         board_id: String,
+    },
+    Update {
+        board_id: String,
+        update_id: String,
+        image_path: String,
+        image_size: u64,
+        image_sha256: String,
+    },
+    ConfirmUpdate {
+        board_id: String,
+        update_id: String,
     },
     Boot {
         board_id: String,

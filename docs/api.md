@@ -469,7 +469,25 @@ GET /api/v1/admin/loader-devices
 
 返回当前内存探测表，包括永久/当前 MAC、IP、架构、loader 版本、SMBIOS Type 1 摘要、最近出现时间、在线状态、冲突状态、当前注册代次和实时解析出的 `bound_board_id`。10 秒未上报视为离线，记录保留 24 小时；绑定关系始终从板卡 TOML 按 MAC 计算，不单独持久化。Web UI 只为 `bound_board_id = null` 的设备提供“创建配置”。
 
-内建 QEMU 默认关闭。启用后可管理真实 QEMU 进程：
+内建 QEMU 默认关闭。启用时在服务端配置中提供实际 QEMU、OVMF 和 axloader
+产物路径，并声明隔离网络及 TAP 池：
+
+```toml
+[virtual_qemu]
+enabled = true
+qemu_binary = "/usr/bin/qemu-system-x86_64"
+ovmf_code = "/usr/share/OVMF/OVMF_CODE_4M.fd"
+ovmf_vars = "/usr/share/OVMF/OVMF_VARS_4M.fd"
+axloader_efi = "/opt/ostool/BOOTX64.EFI"
+runtime_dir = "/var/lib/ostool-server/qemu"
+network_namespace = "ostool-qemu"
+bridge = "ostool-br0"
+tap_pool = ["ostool-tap0", "ostool-tap1"]
+memory_mib = 512
+cpus = 2
+```
+
+启用后可管理真实 QEMU 进程：
 
 ```http
 GET /api/v1/admin/virtual-devices
@@ -492,6 +510,7 @@ ostool-server --config .ostool-server.toml virtual-lab down
 ```
 
 默认创建独立 network namespace、bridge、veth、dnsmasq 和当前用户拥有的 TAP 池，客户机网段为 `10.77.0.0/24`，服务端地址为 `10.77.0.1`。该操作需要 Linux `CAP_NET_ADMIN`。
+完整绑定约束与逐步验收流程见 [内建 QEMU 虚拟板](axloader-network-control.md#3-内建-qemu-虚拟板)。
 
 ### DTB 管理
 
@@ -670,7 +689,24 @@ Content-Type: application/json
 
 本节定义两种后端共用的开发板服务契约：本地局域网模式由 `ostool-server` 直接提供，认证模式由独立认证后端提供受认证的对应接口。这里覆盖 `ostool-server` 的全部公开、非管理 REST 接口。`ostool` 当前命令会使用会话文件上传；配置宿主 initramfs 时还会调用普通 HTTP Boot 文件上传。它不直接调用会话详情、会话文件列表/查询/删除和显式电源控制；这些仍属于公开 board 服务契约，其中显式电源控制也已有 `BoardServerClient` 方法。
 
-axloader 协议 v3 另使用 `POST /api/v1/loaders/poll`、`POST /api/v1/loaders/status` 和 `GET /api/v1/sessions/{session_id}/loader-status`。poll/status 由 UDP 发现返回的一次性 `registration_id` 关联本次固件启动；状态以 `session_id + boot_id + registration_id` 定位，旧代次迟到上报不能覆盖新代次。服务端仍接受 v2 loader：仅无 `initramfs` 且无 `cmdline` 的启动可下发；否则 poll 返回 `reject`，代码为 `boot_payload_unsupported`。Session 释放时删除启动清单和 loader 状态。
+axloader 协议 v2/v3/v4 使用 `POST /api/v1/loaders/poll`、`POST /api/v1/loaders/status` 和 `GET /api/v1/sessions/{session_id}/loader-status`。poll/status 由 UDP 发现返回的一次性 `registration_id` 关联本次固件启动；状态以 `session_id + boot_id + registration_id` 定位，旧代次迟到上报不能覆盖新代次。v2 loader 仅在没有 `initramfs` 与 `cmdline` 时接收启动，否则得到 `boot_payload_unsupported`；v3 保留原有启动契约；v4 另携带 `ota` 状态并可收到 `update` / `confirm_update`。Session 释放时删除启动清单和 loader 状态，不删除独立持久的 OTA 任务。
+
+v5 axloader 通过 UDP 广播自身地址，ostool-server 随后调用设备的 HTTP 接口。设备 `POST /api/v1/boot/jobs` 创建事务返回 `201`，相同清单重试返回 `200`，冲突清单返回 `409`；服务端观察到同代次的其他启动 ID 时会先删除旧事务并只重试创建一次，删除返回 `404` 也视为旧事务已经消失。服务端构造 v5 清单时完整保留相互独立的可选 `cmdline` 与 `initramfs` 元数据，并把 Session 的兼容入口转换为 `__x86_64_efi_pe_entry`；v2/v3/v4 poll 响应继续返回原入口。`POST /api/v1/boot/jobs/{id}/start` 和 `PUT /api/v1/ota/image` 接受交接或升级后返回 `202`；`POST /api/v1/ota/confirm` 成功返回 `200`，代次、来源或升级 ID 不匹配返回 `409`。完整设备接口及状态机见 [axloader 网络控制与本地验证](axloader-network-control.md#21-启动事务)和[装载器升级](axloader-network-control.md#22-装载器升级)。设备没有可用 OTA 持久区时，`ota` 状态可以为空；服务端跳过升级，但仍可向已有 Session 推送普通启动事务。
+
+装载器镜像库和指派任务使用下列 ostool-server 接口：
+
+| 方法与路径 | 成功结果 | 主要冲突或校验错误 |
+| --- | --- | --- |
+| `GET /api/v1/admin/loader-images` | `200`，返回持久镜像元数据列表 | 镜像库读取失败返回 `500` |
+| `POST /api/v1/admin/loader-images` | `201`，按请求体保存 EFI 并返回摘要、长度和可选 `X-Image-Version` | 空请求体、缺少或错误的 `Content-Length`、无效 PE/COFF 或版本返回 `400`，超过 32 MiB 返回 `413` |
+| `DELETE /api/v1/admin/loader-images/{sha256}` | `204`，删除未被活动任务引用的 EFI 文件和元数据 | 摘要无效返回 `400`，镜像不存在返回 `404`，仍被非终态任务引用返回 `409` |
+| `GET /api/v1/admin/boards/{board_id}/loader-updates` | `200`，返回该板卡当前任务或 `null` | 未知板卡返回 `404` |
+| `POST /api/v1/admin/boards/{board_id}/loader-updates` | `201`，为 x86_64 UEFI HTTP 板卡创建绑定当前 MAC 的独立升级 ID；省略 `boot_arch` 时按 `x86_64` 处理 | 架构或启动类型不支持、板卡有 Session、已有非终态任务、设备处于待试槽或镜像已激活时返回 `409` |
+| `DELETE /api/v1/admin/boards/{board_id}/loader-updates/{update_id}` | `200`，取消任意非终态任务并返回 `cancelled` 任务 | ID 已被替代或任务已经终结返回 `409` |
+| `GET /api/v1/loader-updates/{update_id}/image` | `200`，向旧 v4 loader 返回任务对应 EFI | 任务不存在或不可下载返回 `404`，板卡 MAC 已改变返回 `409` |
+| `POST /api/v1/loaders/ota-status` | `204`，接受旧 v4 loader 的阶段上报 | 协议版本错误返回 `400`，注册、MAC、任务或阶段不匹配返回 `409` |
+
+OTA 镜像和任务是独立于 Session 的持久状态。服务端重启后继续使用原升级 ID；同一阶段的回报可安全重试。空闲检查只限制新镜像下发；若设备已运行与服务端任务匹配的待试槽，即使板卡已经进入活动 Session，服务端也会先确认该槽，使设备随后可以接受该 Session 的启动事务。v5 设备镜像投递失败会持久记录错误和次数，连续三次失败后任务进入 `failed` 并停止重发。取消已激活的任务不会远程改写设备状态，已进入待试槽的设备会在未获确认时按自身 A/B 规则回滚。非终态任务引用的镜像不能删除；删除终态任务曾引用的镜像只回收 EFI 文件和镜像元数据，任务中保存的摘要、版本和长度仍可用于审计。
 
 ### 查询开发板类型
 

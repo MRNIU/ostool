@@ -15,7 +15,7 @@
 
 ## 📖 Project Overview
 
-See [docs/axloader-network-control.md](docs/axloader-network-control.md) for the axloader 0.2 network control, persistent MAC binding, web administration, and built-in QEMU virtual board design. The complete API contract is documented in [docs/api.md](docs/api.md).
+See [docs/axloader-network-control.md](docs/axloader-network-control.md) for axloader network control (v6 serial auto-binding, v5 device identification and OTA, and legacy v2/v3/v4 identification and upgrade endpoints), persistent MAC binding, web administration, built-in QEMU virtual boards, and local validation with a real FAT disk image. The complete API contract is documented in [docs/api.md](docs/api.md).
 
 The management console at `/admin/` uses React + shadcn/ui. In the new-board form, choose a power module and power it on before selecting a discovered MAC or entering one manually; saving completes the binding. All management pages receive SSE updates and preserve displayed data and drafts across reconnects. See [Admin UI and event protocol](docs/admin-ui.md).
 At startup, incompatible board TOML files move into `quarantine/` under the board directory with their original contents and diagnostic metadata; valid boards continue to load.
@@ -310,8 +310,12 @@ args = ["-machine", "virt", "-cpu", "cortex-a57", "-nographic"]
 # Enable UEFI boot
 uefi = false
 
-# Output as binary file
-to_bin = true
+# Optional host archive and kernel command line
+initramfs = "images/host.cpio.gz"
+cmdline = "console=ttyAMA0 rdinit=/init -- rescue"
+
+# Optional compatibility setting; UEFI QEMU prepares the required BIN automatically
+to_bin = false
 
 # Failure regex patterns (for auto-detection)
 fail_regex = ["panic", "error", "failed"]
@@ -331,6 +335,10 @@ baud_rate = "115200"
 # Device tree file (optional)
 dtb_file = "tools/device_tree.dtb"
 
+# Optional FIT ramdisk and U-Boot bootargs
+initramfs = "images/host.cpio.gz"
+cmdline = "console=ttyS0 rdinit=/init"
+
 # Kernel load address (optional)
 kernel_load_addr = "0x80080000"
 
@@ -348,6 +356,8 @@ fail_regex = ["Boot failed", "Error loading kernel"]
 interface = "eth0"
 board_ip = "192.168.1.100"
 ```
+
+`BootPayloadConfig.cmdline` and `initramfs` are independent optional fields. They are top-level runtime settings for QEMU, board, and U-Boot configurations rather than build settings. `initramfs` is the **host** archive, separate from a Linux guest initrd. Direct AArch64/RISC-V QEMU boot passes it with `-initrd` and passes `cmdline` with `-append`; x86 uses `EFI/BOOT/initramfs.cpio` and `cmdline.txt` on the UEFI ESP, not the Linux x86 boot protocol for a bare ELF. U-Boot includes the archive as a FIT ramdisk and sets `bootargs` before booting. FIT generation removes inherited `linux,initrd-start/end` properties and any exactly matching memory reservation from the input DTB. If the FIT contains a ramdisk, U-Boot writes the range for this boot. The serial command path rejects a `cmdline` containing a single quote. For board HTTP Boot, the archive and kernel belong to the same session and the server records the archive size and SHA-256. v5 devices retain identification and OTA; v6 devices first let the server verify the UART identity with the parameters reported for the current boot, then release the start request with a binding token, convert the compatibility entry to `__x86_64_efi_pe_entry`, and pass cmdline through EFI LoadOptions and initramfs through the TGOS `BootPayload` table. The v2/v3/v4 poll path retains identification and upgrade purposes, while ordinary boot returns `serial_protocol_upgrade_required`. The archive limit is 256 MiB and the command-line limit is 4095 printable ASCII bytes. Firmware and kernels on physical boards must implement the corresponding handoff.
 
 ### Ordered shell initialization steps
 

@@ -127,6 +127,19 @@ export interface PxeProfile {
 export interface UefiHttpProfile {
   kind: "httpboot";
   boot_arch?: string | null;
+  serial_parameters?: AxloaderSerialParameters | null;
+}
+
+export type AxloaderSerialParity = "none" | "odd" | "even" | "mark" | "space";
+export type AxloaderSerialStopBits = "one" | "one_point_five" | "two";
+export type AxloaderSerialFlowControl = "none" | "rts_cts";
+
+export interface AxloaderSerialParameters {
+  baud_rate: number;
+  data_bits: number;
+  parity: AxloaderSerialParity;
+  stop_bits: AxloaderSerialStopBits;
+  flow_control: AxloaderSerialFlowControl;
 }
 
 export type BootConfig = UbootProfile | PxeProfile | UefiHttpProfile;
@@ -180,6 +193,35 @@ export interface LoaderDeviceSummary {
   current_registration_id: string | null;
 }
 
+export interface LoaderImage {
+  sha256: string;
+  size: number;
+  version: string | null;
+}
+
+export interface LoaderUpdateJob {
+  board_id: string;
+  mac_address: string;
+  update_id: string;
+  image: LoaderImage;
+  phase:
+    | "queued"
+    | "downloading"
+    | "staged"
+    | "confirming"
+    | "succeeded"
+    | "rolled_back"
+    | "failed"
+    | "cancelled";
+  error: string | null;
+  delivery_attempts: number;
+}
+
+export interface LoaderOtaResources {
+  jobs: LoaderUpdateJob[];
+  images: LoaderImage[];
+}
+
 export interface VirtualDeviceSummary {
   id: string;
   mac_address: string;
@@ -209,6 +251,8 @@ export interface DtbFileResponse {
 }
 
 export interface Session {
+  serial_connected?: boolean;
+  serial_runtime?: SerialRuntimeStatus;
   id: string;
   board_id: string;
   client_name: string | null;
@@ -285,4 +329,27 @@ export interface TftpSessionResponse {
   netmask: string | null;
   writable: boolean;
   files: FileResponse[];
+}
+
+export interface SerialRuntimeStatus {
+  phase:
+    | "waiting_device"
+    | "verifying"
+    | "discovering"
+    | "bound"
+    | "recovering"
+    | "failed"
+    | "closed";
+  port: string | null;
+  parameters: {
+    baud_rate: number;
+    data_bits: number;
+    parity: string;
+    stop_bits: string;
+    flow_control: string;
+  } | null;
+  error: string | null;
+  warning: string | null;
+  binding_id: string | null;
+  boot_epoch: string | null;
 }

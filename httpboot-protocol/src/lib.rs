@@ -5,12 +5,29 @@ extern crate alloc;
 
 use core::{fmt, str::FromStr};
 
+mod serial;
+pub use serial::*;
+
 #[cfg(feature = "alloc")]
 use alloc::{string::String, vec::Vec};
 
-pub const PROTOCOL_VERSION: u16 = 2;
+pub const PROTOCOL_VERSION: u16 = 4;
+/// Loader-hosted HTTP with per-boot serial binding. v5 supports OTA migration only.
+pub const DEVICE_PROTOCOL_VERSION: u16 = 6;
+pub const PREVIOUS_DEVICE_PROTOCOL_VERSION: u16 = 5;
+pub const PREVIOUS_PROTOCOL_VERSION: u16 = 3;
+pub const LEGACY_PROTOCOL_VERSION: u16 = 2;
+pub const MAX_HOST_CMDLINE_BYTES: usize = 4095;
+pub const MAX_HTTP_BOOT_INITRAMFS_BYTES: usize = 256 * 1024 * 1024;
 pub const DISCOVERY_PORT: u16 = 2998;
 pub const MAX_DISCOVERY_DATAGRAM_BYTES: usize = 1400;
+
+pub fn valid_host_cmdline(value: &str) -> bool {
+    value.len() <= MAX_HOST_CMDLINE_BYTES
+        && value
+            .bytes()
+            .all(|byte| byte == b' ' || byte.is_ascii_graphic())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct MacAddress([u8; 6]);
@@ -156,6 +173,74 @@ pub struct LoaderDiscoveryProbe {
     pub loader_version: String,
 }
 
+/// A v5/v6 loader advertises its own HTTP endpoint without registering with a server.
+#[cfg(feature = "alloc")]
+#[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoaderAnnouncement {
+    pub protocol_version: u16,
+    pub mac_address: MacAddress,
+    pub current_mac_address: MacAddress,
+    pub arch: BootArch,
+    pub loader_version: String,
+    pub boot_epoch: String,
+    pub http_port: u16,
+    #[cfg_attr(feature = "json", serde(default))]
+    pub serial_id: Option<String>,
+    #[cfg_attr(feature = "json", serde(default))]
+    pub serial_ready: bool,
+}
+
+/// The caller owns the boot ID; the loader owns the current boot epoch.
+#[cfg(feature = "alloc")]
+#[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceBootJob {
+    pub boot_id: String,
+    pub arch: BootArch,
+    pub image_format: ImageFormat,
+    pub kernel: DeviceBootImage,
+    pub initramfs: Option<DeviceBootImage>,
+    pub cmdline: Option<String>,
+    pub entry_symbol: Option<String>,
+}
+
+#[cfg(feature = "alloc")]
+#[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceBootImage {
+    pub size: u64,
+    pub sha256: String,
+}
+
+#[cfg(feature = "alloc")]
+#[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceBootStatus {
+    pub boot_id: String,
+    pub phase: String,
+    pub kernel_received: bool,
+    pub initramfs_received: bool,
+    pub last_error: Option<String>,
+}
+
+#[cfg(feature = "alloc")]
+#[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoaderDeviceStatus {
+    pub protocol_version: u16,
+    pub boot_epoch: String,
+    pub mac_address: MacAddress,
+    pub current_mac_address: MacAddress,
+    pub arch: BootArch,
+    pub loader_version: String,
+    pub hardware: LoaderHardwareInfo,
+    pub boot: Option<DeviceBootStatus>,
+    pub ota: Option<LoaderOtaState>,
+    #[cfg_attr(feature = "json", serde(default))]
+    pub serial: Option<LoaderSerialStatus>,
+}
+
 #[cfg(feature = "alloc")]
 #[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -179,6 +264,43 @@ pub struct LoaderPollRequest {
     pub arch: BootArch,
     pub loader_version: String,
     pub hardware: LoaderHardwareInfo,
+    /// Present only for OTA-aware loaders (protocol v4).
+    #[cfg_attr(
+        feature = "json",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub ota: Option<LoaderOtaState>,
+}
+
+#[cfg(feature = "alloc")]
+#[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoaderOtaState {
+    pub active_sha256: String,
+    pub running_sha256: String,
+    pub pending_update_id: Option<String>,
+    /// A pending image is runnable only after its attempt record was flushed.
+    pub trial: bool,
+    pub source: Option<OtaSource>,
+    pub last_update_id: Option<String>,
+    pub last_outcome: Option<OtaOutcome>,
+}
+
+#[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "json", serde(rename_all = "snake_case"))]
+pub enum OtaSource {
+    Direct,
+    Server,
+}
+
+#[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "json", serde(rename_all = "snake_case"))]
+pub enum OtaOutcome {
+    Confirmed,
+    RolledBack,
+    Failed,
 }
 
 #[cfg(feature = "alloc")]
@@ -190,6 +312,17 @@ pub enum LoaderPollResponse {
     BoundIdle {
         board_id: String,
     },
+    Update {
+        board_id: String,
+        update_id: String,
+        image_path: String,
+        image_size: u64,
+        image_sha256: String,
+    },
+    ConfirmUpdate {
+        board_id: String,
+        update_id: String,
+    },
     Boot {
         board_id: String,
         session_id: String,
@@ -200,12 +333,24 @@ pub enum LoaderPollResponse {
         arch: BootArch,
         image_format: ImageFormat,
         entry_symbol: Option<String>,
+        initramfs: Option<BootFile>,
+        cmdline: Option<String>,
     },
     Reject {
         code: String,
         message: String,
         retry_after_ms: Option<u64>,
     },
+}
+
+/// A session-scoped boot file authenticated before kernel handoff.
+#[cfg(feature = "alloc")]
+#[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BootFile {
+    pub path: String,
+    pub size: u64,
+    pub sha256: String,
 }
 
 #[cfg(feature = "alloc")]
@@ -371,6 +516,12 @@ mod tests {
             arch: BootArch::X86_64,
             image_format: ImageFormat::Elf64,
             entry_symbol: Some("httpboot_entry".into()),
+            initramfs: Some(BootFile {
+                path: "/boot/sessions/session-1/initramfs.cpio".into(),
+                size: 1024,
+                sha256: "11".repeat(32),
+            }),
+            cmdline: Some("root=/dev/vda".into()),
         };
         let bytes = serde_json::to_vec(&response).unwrap();
         assert_eq!(

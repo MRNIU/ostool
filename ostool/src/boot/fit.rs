@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use byte_unit::Byte;
+use fdt_edit::Fdt;
 use fitimage::{ComponentConfig, FitImageBuilder, FitImageConfig};
 use log::{info, warn};
 use object::Architecture;
@@ -21,6 +22,7 @@ use crate::{
 
 const KERNEL_COMPONENT_NAME: &str = "kernel";
 const FDT_COMPONENT_NAME: &str = "fdt";
+const RAMDISK_COMPONENT_NAME: &str = "ramdisk";
 const DEFAULT_CONFIG_NAME: &str = "config-ostool";
 const FIT_DESCRIPTION: &str = "Various kernels, ramdisks and FDT blobs";
 const FIT_IMAGE_NAME: &str = "image.fit";
@@ -40,6 +42,7 @@ mod errors {
 pub(crate) struct FitInput {
     pub(crate) kernel_path: PathBuf,
     pub(crate) dtb_path: Option<PathBuf>,
+    pub(crate) initramfs_path: Option<PathBuf>,
     pub(crate) arch: Architecture,
     pub(crate) kernel_load_addr: u64,
     pub(crate) kernel_entry_addr: u64,
@@ -150,6 +153,7 @@ pub(crate) async fn generate_configured_fit(
         FitInput {
             kernel_path: prepared.elf().to_path_buf(),
             dtb_path: config.fdt.as_ref().map(|fdt| fdt.path.clone()),
+            initramfs_path: None,
             arch: metadata.arch,
             kernel_load_addr: load,
             kernel_entry_addr: entry,
@@ -244,10 +248,23 @@ async fn write_fit_image(
             dtb_path.display(),
             Byte::from(data.len())
         );
-        Some(data)
+        Some(
+            drop_stale_initrd(data)
+                .with_context(|| format!("failed to prepare FIT DTB {}", dtb_path.display()))?,
+        )
     } else {
         warn!("未指定 DTB 文件，将生成仅包含 kernel 的 FIT image");
         None
+    };
+    let initramfs_data = match input.initramfs_path.as_ref() {
+        Some(path) => {
+            let data = fs::read(path)
+                .await
+                .with_path("failed to read initramfs", path)?;
+            anyhow::ensure!(!data.is_empty(), "initramfs is empty: {}", path.display());
+            Some(data)
+        }
+        None => None,
     };
 
     let config = build_fit_config(
@@ -255,6 +272,7 @@ async fn write_fit_image(
         os,
         kernel_data,
         dtb_data,
+        initramfs_data,
         input.kernel_load_addr,
         kernel_entry_addr,
         input.fdt_load_addr,
@@ -274,6 +292,42 @@ async fn write_fit_image(
 
     info!("FIT image ok: {}", output_path.display());
     Ok(GeneratedFitImage { path: output_path })
+}
+
+fn drop_stale_initrd(data: Vec<u8>) -> anyhow::Result<Vec<u8>> {
+    // U-Boot supplies the current FIT ramdisk range during bootm. A preset DTB
+    // may still carry the range of an unrelated, earlier Linux boot.
+    let mut fdt = Fdt::from_bytes(&data).context("invalid input DTB")?;
+    let Some(chosen_id) = fdt.get_by_path("/chosen").map(|node| node.id()) else {
+        return Ok(data);
+    };
+    let chosen = fdt.node_mut(chosen_id).expect("chosen node belongs to FDT");
+    let start_property = chosen.remove_property("linux,initrd-start");
+    let end_property = chosen.remove_property("linux,initrd-end");
+    if start_property.is_none() && end_property.is_none() {
+        return Ok(data);
+    }
+    let start = start_property
+        .as_ref()
+        .and_then(|property| decode_initrd_address(&property.data));
+    let end = end_property
+        .as_ref()
+        .and_then(|property| decode_initrd_address(&property.data));
+    if let (Some(start), Some(end)) = (start, end)
+        && let Some(size) = end.checked_sub(start)
+    {
+        fdt.memory_reservations
+            .retain(|reservation| reservation.address != start || reservation.size != size);
+    }
+    Ok(fdt.encode().as_ref().to_vec())
+}
+
+fn decode_initrd_address(data: &[u8]) -> Option<u64> {
+    match data {
+        [a, b, c, d] => Some(u32::from_be_bytes([*a, *b, *c, *d]) as u64),
+        [a, b, c, d, e, f, g, h] => Some(u64::from_be_bytes([*a, *b, *c, *d, *e, *f, *g, *h])),
+        _ => None,
+    }
 }
 
 pub(crate) fn fit_arch_name(arch: Architecture) -> anyhow::Result<&'static str> {
@@ -332,11 +386,13 @@ fn default_output_path(kernel_path: &Path) -> anyhow::Result<PathBuf> {
     Ok(Path::new(output_dir).join(FIT_IMAGE_NAME))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_fit_config(
     arch_name: &'static str,
     os: FitOs,
     kernel_data: Vec<u8>,
     dtb_data: Option<Vec<u8>>,
+    initramfs_data: Option<Vec<u8>>,
     kernel_load_addr: u64,
     kernel_entry_addr: u64,
     fdt_load_addr: Option<u64>,
@@ -368,6 +424,22 @@ fn build_fit_config(
         None
     };
 
+    let ramdisk_name = if let Some(data) = initramfs_data {
+        config = config.with_ramdisk(
+            ComponentConfig::new(RAMDISK_COMPONENT_NAME, data)
+                .with_type("ramdisk")
+                .with_arch(arch_name)
+                .with_os("linux")
+                .with_compression(false)
+                // Rockchip FIT post-processing requires a load property. Zero
+                // keeps FIT_LOAD_OPTIONAL_NON_ZERO ramdisks inside the FIT.
+                .with_load_address(0),
+        );
+        Some(RAMDISK_COMPONENT_NAME)
+    } else {
+        None
+    };
+
     config
         .with_default_config(DEFAULT_CONFIG_NAME)
         .with_configuration(
@@ -375,7 +447,7 @@ fn build_fit_config(
             "ostool configuration",
             Some(KERNEL_COMPONENT_NAME),
             fdt_name,
-            None::<String>,
+            ramdisk_name,
         )
 }
 
@@ -385,6 +457,7 @@ mod tests {
         FitInput, FitOs, build_fit_config, default_output_path, fit_arch_name,
         resolve_kernel_entry_addr,
     };
+    use fdt_edit::{Fdt, Node, Property};
     use object::Architecture;
 
     #[test]
@@ -440,6 +513,7 @@ mod tests {
             FitOs::Linux,
             vec![1, 2, 3],
             None,
+            None,
             0x80000,
             0x80000,
             None,
@@ -472,6 +546,7 @@ mod tests {
             FitOs::Linux,
             vec![1, 2, 3],
             Some(vec![4, 5, 6]),
+            None,
             0x8020_0000,
             0x8020_0000,
             Some(0x8800_0000),
@@ -486,6 +561,35 @@ mod tests {
         assert_eq!(default_config.fdt.as_deref(), Some("fdt"));
     }
 
+    #[test]
+    fn fit_links_initramfs_without_relocation_for_target_architecture() {
+        let config = build_fit_config(
+            "riscv",
+            FitOs::Linux,
+            vec![1, 2, 3],
+            None,
+            Some(vec![4, 5, 6]),
+            0x8020_0000,
+            0x8020_0000,
+            None,
+        );
+        let bytes = fitimage::FitImageBuilder::new().build(config).unwrap();
+        let fit = Fdt::from_bytes(&bytes).unwrap();
+        let ramdisk = fit.get_by_path("/images/ramdisk").unwrap().as_node();
+        assert_eq!(ramdisk.get_property("data").unwrap().data, [4, 5, 6]);
+        assert_eq!(ramdisk.get_property("arch").unwrap().data, b"riscv\0");
+        assert_eq!(ramdisk.get_property("compression").unwrap().data, b"none\0");
+        assert_eq!(
+            ramdisk.get_property("load").unwrap().data,
+            0_u64.to_be_bytes()
+        );
+        let selected = fit
+            .get_by_path("/configurations/config-ostool")
+            .unwrap()
+            .as_node();
+        assert_eq!(selected.get_property("ramdisk").unwrap().data, b"ramdisk\0");
+    }
+
     #[tokio::test]
     async fn generate_fit_image_writes_default_output_path() {
         let temp = tempfile::tempdir().unwrap();
@@ -497,6 +601,7 @@ mod tests {
         let generated = super::generate_fit_image(FitInput {
             kernel_path: kernel_path.clone(),
             dtb_path: None,
+            initramfs_path: None,
             arch: Architecture::Aarch64,
             kernel_load_addr: 0x80000,
             kernel_entry_addr: 0x80000,
@@ -521,11 +626,14 @@ mod tests {
         tokio::fs::write(&kernel_path, [1_u8, 2, 3, 4])
             .await
             .unwrap();
-        tokio::fs::write(&dtb_path, [5_u8, 6, 7, 8]).await.unwrap();
+        tokio::fs::write(&dtb_path, Fdt::new().encode().as_ref())
+            .await
+            .unwrap();
 
         let generated = super::generate_fit_image(FitInput {
             kernel_path,
             dtb_path: Some(dtb_path),
+            initramfs_path: None,
             arch: Architecture::Riscv64,
             kernel_load_addr: 0x8020_0000,
             kernel_entry_addr: 0x8020_0000,
@@ -542,5 +650,71 @@ mod tests {
                 .unwrap()
                 .is_file()
         );
+    }
+
+    #[tokio::test]
+    async fn fit_without_ramdisk_drops_stale_initrd_properties() {
+        let temp = tempfile::tempdir().unwrap();
+        let kernel_path = temp.path().join("kernel.bin");
+        let dtb_path = temp.path().join("board.dtb");
+        tokio::fs::write(&kernel_path, [1_u8, 2, 3, 4])
+            .await
+            .unwrap();
+
+        let mut board = Fdt::new();
+        board.memory_reservations.push(fdt_edit::MemoryReservation {
+            address: 0x4610_0000,
+            size: 0x05f0_0000,
+        });
+        board.memory_reservations.push(fdt_edit::MemoryReservation {
+            address: 0x8000_0000,
+            size: 0x1000,
+        });
+        let chosen = board.add_node(board.root_id(), Node::new("chosen"));
+        let node = board.node_mut(chosen).unwrap();
+        node.set_property(Property::new(
+            "linux,initrd-start",
+            0x4610_0000_u64.to_be_bytes().to_vec(),
+        ));
+        node.set_property(Property::new(
+            "linux,initrd-end",
+            0x4c00_0000_u64.to_be_bytes().to_vec(),
+        ));
+        node.set_property(Property::new("bootargs", b"root=/dev/mmcblk0p2\0".to_vec()));
+        tokio::fs::write(&dtb_path, board.encode().as_ref())
+            .await
+            .unwrap();
+
+        let generated = super::generate_fit_image(FitInput {
+            kernel_path,
+            dtb_path: Some(dtb_path),
+            initramfs_path: None,
+            arch: Architecture::Riscv64,
+            kernel_load_addr: 0x8020_0000,
+            kernel_entry_addr: 0x8020_0000,
+            fdt_load_addr: None,
+            output_path: None,
+        })
+        .await
+        .unwrap();
+        let fit_bytes = tokio::fs::read(generated.path()).await.unwrap();
+        let fit = Fdt::from_bytes(&fit_bytes).unwrap();
+        let fdt_bytes = &fit
+            .get_by_path("/images/fdt")
+            .unwrap()
+            .as_node()
+            .get_property("data")
+            .unwrap()
+            .data;
+        let boot_fdt = Fdt::from_bytes(fdt_bytes).unwrap();
+        let chosen = boot_fdt.get_by_path("/chosen").unwrap().as_node();
+        assert!(chosen.get_property("linux,initrd-start").is_none());
+        assert!(chosen.get_property("linux,initrd-end").is_none());
+        assert_eq!(
+            chosen.get_property("bootargs").unwrap().data,
+            b"root=/dev/mmcblk0p2\0"
+        );
+        assert_eq!(boot_fdt.memory_reservations.len(), 1);
+        assert_eq!(boot_fdt.memory_reservations[0].address, 0x8000_0000);
     }
 }

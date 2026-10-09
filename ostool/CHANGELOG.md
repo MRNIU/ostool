@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.31.0](https://github.com/drivercraft/ostool/compare/ostool-v0.30.3...ostool-v0.31.0) - 2026-10-09
+
+### Added
+
+- *(ostool-server)* add automatic axloader serial binding ([#206](https://github.com/drivercraft/ostool/pull/206))
+
+## [0.30.3](https://github.com/drivercraft/ostool/compare/ostool-v0.30.2...ostool-v0.30.3) - 2026-10-08
+
+### Fixed
+
+- *(ostool)* keep FIT ramdisks compatible with Rockchip U-Boot ([#207](https://github.com/drivercraft/ostool/pull/207))
+
+## [0.30.2](https://github.com/drivercraft/ostool/compare/ostool-v0.30.1...ostool-v0.30.2) - 2026-09-30
+
+### Fixed
+
+- *(ostool)* drop inherited initrd addresses from FIT device trees ([#201](https://github.com/drivercraft/ostool/pull/201))
+
+## [0.30.1](https://github.com/drivercraft/ostool/compare/ostool-v0.30.0...ostool-v0.30.1) - 2026-09-29
+
+### Added
+
+- *(ostool-server)* control axloader boot and OTA through device HTTP ([#198](https://github.com/drivercraft/ostool/pull/198))
+
+## [0.30.0](https://github.com/drivercraft/ostool/compare/ostool-v0.29.5...ostool-v0.30.0) - 2026-09-28
+
+### Added
+
+- *(boot)* [**breaking**] add host initramfs handoff across runners ([#194](https://github.com/drivercraft/ostool/pull/194))
+- *(ostool)* 支持可选 ELF 调试产物与元数据解析 ([#193](https://github.com/drivercraft/ostool/pull/193))
+
 ## [0.29.5](https://github.com/drivercraft/ostool/compare/ostool-v0.29.4...ostool-v0.29.5) - 2026-09-21
 
 ### Fixed

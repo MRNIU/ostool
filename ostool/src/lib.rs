@@ -36,6 +36,7 @@
 
 mod artifact;
 mod boot;
+pub use boot::payload::BootPayloadConfig;
 
 /// Authentication gateway client, secure credential storage, and token lifecycle management.
 pub mod auth;
@@ -93,3 +94,5 @@ pub mod variables;
 extern crate log;
 #[macro_use]
 extern crate anyhow;
+
+pub mod axloader;

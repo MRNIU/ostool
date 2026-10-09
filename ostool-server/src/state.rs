@@ -20,6 +20,7 @@ use crate::{
     config::{BoardConfig, PowerManagementConfig, ServerConfig},
     dtb_store::DtbStore,
     loader::LoaderRegistry,
+    ota::OtaStore,
     power::{PowerAction, PowerActionError, execute_power_action_for_board},
     session::{Session, SessionState, SessionStopReason},
     tftp::service::TftpManager,
@@ -97,6 +98,7 @@ fn release_settle_delay(board: &BoardConfig) -> Option<Duration> {
 
 #[derive(Clone)]
 pub struct AppState {
+    pub serial_manager: ostool_serial::SerialManager,
     pub admin_events: crate::admin_events::AdminEvents,
     pub admin_power: crate::admin_power::AdminPower,
     pub config_path: Arc<PathBuf>,
@@ -105,6 +107,7 @@ pub struct AppState {
     pub board_runtimes: Arc<RwLock<BTreeMap<String, BoardRuntimeState>>>,
     pub sessions: Arc<RwLock<BTreeMap<String, Arc<SessionState>>>>,
     pub loader_registry: LoaderRegistry,
+    pub ota: OtaStore,
     pub virtual_boards: VirtualBoardManager,
     pub(crate) board_inventory_gate: Arc<Mutex<()>>,
     pub board_store: Arc<FileBoardStore>,
@@ -127,6 +130,7 @@ pub async fn build_app_state(
     let (release_tx, release_rx) = mpsc::unbounded_channel();
 
     let admin_events = crate::admin_events::AdminEvents::default();
+    let ota = OtaStore::open(&config.data_dir)?;
     let mut virtual_boards = VirtualBoardManager::new(config.virtual_qemu.clone());
     virtual_boards.set_events(admin_events.clone());
     if virtual_boards.enabled() {
@@ -146,7 +150,12 @@ pub async fn build_app_state(
             }
         }
     }
+    let serial_manager =
+        ostool_serial::SerialManager::new(Arc::new(crate::serial::backend::ServerSerialBackend {
+            virtual_boards: virtual_boards.clone(),
+        }));
     let state = AppState {
+        serial_manager,
         admin_events: admin_events.clone(),
         admin_power: crate::admin_power::AdminPower::default(),
         config_path: Arc::new(config_path),
@@ -155,6 +164,7 @@ pub async fn build_app_state(
         board_runtimes: Arc::new(RwLock::new(board_runtimes)),
         sessions: Arc::new(RwLock::new(BTreeMap::new())),
         loader_registry: LoaderRegistry::with_events(admin_events),
+        ota,
         virtual_boards,
         board_inventory_gate: Arc::new(Mutex::new(())),
         board_store,
@@ -162,6 +172,15 @@ pub async fn build_app_state(
         tftp_manager: Arc::new(RwLock::new(tftp_manager)),
         release_tx,
     };
+
+    state.refresh_serial_exclusions().await?;
+    let mut serial_snapshot = state.serial_manager.subscribe();
+    let serial_events = state.admin_events.clone();
+    tokio::spawn(async move {
+        while serial_snapshot.changed().await.is_ok() {
+            serial_events.invalidate(&["serial_manager"]);
+        }
+    });
 
     tokio::spawn(run_release_coordinator(state.clone(), release_rx));
 
@@ -385,11 +404,57 @@ impl AppState {
         })
     }
 
+    pub async fn refresh_serial_exclusions(&self) -> anyhow::Result<()> {
+        let selectors = self
+            .boards
+            .read()
+            .await
+            .values()
+            .filter_map(|b| crate::serial::backend::relay_selector(&b.power_management))
+            .collect();
+        self.serial_manager.exclude(selectors).await?;
+        Ok(())
+    }
+    pub async fn prepare_board_serial_exclusions(
+        &self,
+        board: &BoardConfig,
+        replaced: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let boards = self.boards.read().await;
+        let mut selectors: Vec<_> = boards
+            .iter()
+            .filter(|(id, _)| Some(id.as_str()) != replaced)
+            .filter_map(|(_, b)| crate::serial::backend::relay_selector(&b.power_management))
+            .collect();
+        selectors.extend(crate::serial::backend::relay_selector(
+            &board.power_management,
+        ));
+        drop(boards);
+        self.serial_manager.exclude(selectors).await?;
+        Ok(())
+    }
+    pub async fn reserve_power_serial(
+        &self,
+        power: &PowerManagementConfig,
+    ) -> anyhow::Result<Option<ostool_serial::PortReservation>> {
+        if let PowerManagementConfig::ZhongshengRelay(relay) = power {
+            let locator = crate::serial::backend::locator_for_key(&relay.key)?;
+            return Ok(Some(self.serial_manager.reserve(locator).await?));
+        }
+        Ok(None)
+    }
     pub async fn execute_board_power_action(
         &self,
         board: &BoardConfig,
         action: PowerAction,
     ) -> Result<String, PowerActionError> {
+        if matches!(board.boot, crate::config::BootConfig::UefiHttp(_))
+            && let Some(runtime) = self.board_runtime_status(&board.id).await
+            && let Some(id) = runtime.active_session_id
+            && let Some(session) = self.session_state(&id).await
+        {
+            session.change_power(action == PowerAction::On).await;
+        }
         if let PowerManagementConfig::Qemu { virtual_device_id } = &board.power_management {
             return match action {
                 PowerAction::On => {
@@ -414,6 +479,10 @@ impl AppState {
                     .map_err(PowerActionError::Execution),
             };
         }
+        let _reservation = self
+            .reserve_power_serial(&board.power_management)
+            .await
+            .map_err(PowerActionError::Execution)?;
         execute_power_action_for_board(board, action).await
     }
 
@@ -718,7 +787,14 @@ impl AppState {
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
             if !session.is_serial_connected() {
-                return Ok(());
+                let owner = session.snapshot().await.id;
+                return tokio::time::timeout_at(
+                    deadline,
+                    self.serial_manager.wait_owner_released(&owner),
+                )
+                .await
+                .map_err(|_| "timed out waiting for actual serial lease release".to_string())?
+                .map_err(|e| e.to_string());
             }
 
             if tokio::time::Instant::now() >= deadline {
@@ -964,7 +1040,7 @@ mod tests {
         async fn remove_session_dir(&self, _session_id: &str) -> anyhow::Result<()> {
             if let Some(failures_remaining) = &self.failures_remaining {
                 if failures_remaining
-                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+                    .try_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
                         remaining.checked_sub(1)
                     })
                     .is_err()

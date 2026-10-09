@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/drivercraft/ostool/compare/httpboot-protocol-v0.4.1...httpboot-protocol-v0.5.0) - 2026-10-09
+
+### Added
+
+- *(ostool-server)* add automatic axloader serial binding ([#206](https://github.com/drivercraft/ostool/pull/206))
+
+## [0.4.1](https://github.com/drivercraft/ostool/compare/httpboot-protocol-v0.4.0...httpboot-protocol-v0.4.1) - 2026-09-30
+
+### Other
+
+- release ([#199](https://github.com/drivercraft/ostool/pull/199))
+
+## [0.4.0](https://github.com/drivercraft/ostool/compare/httpboot-protocol-v0.3.0...httpboot-protocol-v0.4.0) - 2026-09-29
+
+### Added
+
+- *(ostool-server)* control axloader boot and OTA through device HTTP ([#198](https://github.com/drivercraft/ostool/pull/198))
+
+## [0.3.0](https://github.com/drivercraft/ostool/compare/httpboot-protocol-v0.2.1...httpboot-protocol-v0.3.0) - 2026-09-28
+
+### Added
+
+- *(boot)* [**breaking**] add host initramfs handoff across runners ([#194](https://github.com/drivercraft/ostool/pull/194))
+
 ## [0.2.1](https://github.com/drivercraft/ostool/compare/httpboot-protocol-v0.2.0...httpboot-protocol-v0.2.1) - 2026-09-10
 
 ### Other

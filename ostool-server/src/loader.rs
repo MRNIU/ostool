@@ -3,8 +3,10 @@ use std::{collections::BTreeMap, sync::Arc};
 use anyhow::Context;
 use chrono::{DateTime, Duration, Utc};
 use httpboot_protocol::{
+    DEVICE_PROTOCOL_VERSION, LEGACY_PROTOCOL_VERSION, LoaderAnnouncement, LoaderDeviceStatus,
     LoaderDiscoveryOffer, LoaderDiscoveryProbe, LoaderHardwareInfo, LoaderPollRequest,
-    LoaderStatusReport, MAX_DISCOVERY_DATAGRAM_BYTES, MacAddress, PROTOCOL_VERSION,
+    LoaderStatusReport, MAX_DISCOVERY_DATAGRAM_BYTES, MacAddress, PREVIOUS_PROTOCOL_VERSION,
+    PROTOCOL_VERSION,
 };
 use serde::Serialize;
 use tokio::{net::UdpSocket, sync::Mutex, task::JoinHandle};
@@ -32,6 +34,7 @@ pub struct LoaderDeviceSnapshot {
 #[derive(Debug, Clone)]
 struct Registration {
     mac_address: MacAddress,
+    protocol_version: u16,
     issued_at: DateTime<Utc>,
     last_seen_at: Option<DateTime<Utc>>,
     superseded_at: Option<DateTime<Utc>>,
@@ -74,6 +77,67 @@ pub enum RegistrationError {
 }
 
 impl LoaderRegistry {
+    pub async fn accept_announcement(
+        &self,
+        announcement: &LoaderAnnouncement,
+        device: &LoaderDeviceStatus,
+        ip_address: String,
+    ) -> Result<bool, RegistrationError> {
+        if !matches!(
+            announcement.protocol_version,
+            DEVICE_PROTOCOL_VERSION | httpboot_protocol::PREVIOUS_DEVICE_PROTOCOL_VERSION
+        ) || device.protocol_version != announcement.protocol_version
+            || announcement.mac_address != device.mac_address
+            || announcement.boot_epoch != device.boot_epoch
+            || announcement.arch != device.arch
+        {
+            return Err(RegistrationError::ProtocolVersion);
+        }
+        let now = Utc::now();
+        let mut state = self.state.lock().await;
+        prune(&mut state, now);
+        let conflict = state
+            .devices
+            .get(&device.mac_address)
+            .is_some_and(|previous| {
+                (previous.ip_address != ip_address || previous.conflict)
+                    && now - previous.last_seen_at < ONLINE_TTL
+            });
+        if conflict {
+            if let Some(previous) = state.devices.get_mut(&device.mac_address) {
+                previous.conflict = true;
+            }
+        } else {
+            state.devices.insert(
+                device.mac_address,
+                DeviceRecord {
+                    current_mac_address: device.current_mac_address,
+                    ip_address,
+                    arch: device.arch,
+                    loader_version: device.loader_version.clone(),
+                    hardware: device.hardware.clone(),
+                    last_seen_at: now,
+                    current_registration_id: device.boot_epoch.clone(),
+                    conflict: false,
+                },
+            );
+        }
+        drop(state);
+        self.events.invalidate(&["loaders"]);
+        self.deadline_changed.notify_one();
+        Ok(conflict)
+    }
+
+    pub async fn touch_announcement(&self, announcement: &LoaderAnnouncement, ip: &str) {
+        let mut state = self.state.lock().await;
+        if let Some(device) = state.devices.get_mut(&announcement.mac_address)
+            && device.current_registration_id == announcement.boot_epoch
+            && device.ip_address == ip
+        {
+            device.last_seen_at = Utc::now();
+        }
+        self.deadline_changed.notify_one();
+    }
     pub fn new() -> Self {
         Self {
             events: crate::admin_events::AdminEvents::default(),
@@ -153,7 +217,10 @@ impl LoaderRegistry {
         probe: &LoaderDiscoveryProbe,
         control_base_url: String,
     ) -> Result<LoaderDiscoveryOffer, RegistrationError> {
-        if probe.protocol_version != PROTOCOL_VERSION {
+        if !matches!(
+            probe.protocol_version,
+            LEGACY_PROTOCOL_VERSION | PREVIOUS_PROTOCOL_VERSION | PROTOCOL_VERSION
+        ) {
             return Err(RegistrationError::ProtocolVersion);
         }
         let now = Utc::now();
@@ -164,13 +231,14 @@ impl LoaderRegistry {
             registration_id.clone(),
             Registration {
                 mac_address: probe.mac_address,
+                protocol_version: probe.protocol_version,
                 issued_at: now,
                 last_seen_at: None,
                 superseded_at: None,
             },
         );
         Ok(LoaderDiscoveryOffer {
-            protocol_version: PROTOCOL_VERSION,
+            protocol_version: probe.protocol_version,
             server_id: self.server_id.to_string(),
             control_base_url,
             registration_id,
@@ -182,7 +250,10 @@ impl LoaderRegistry {
         &self,
         request: &LoaderPollRequest,
     ) -> Result<bool, RegistrationError> {
-        if request.protocol_version != PROTOCOL_VERSION {
+        if !matches!(
+            request.protocol_version,
+            LEGACY_PROTOCOL_VERSION | PREVIOUS_PROTOCOL_VERSION | PROTOCOL_VERSION
+        ) {
             return Err(RegistrationError::ProtocolVersion);
         }
         let now = Utc::now();
@@ -195,6 +266,9 @@ impl LoaderRegistry {
             .ok_or(RegistrationError::Unknown)?;
         if registration.mac_address != request.mac_address {
             return Err(RegistrationError::MacMismatch);
+        }
+        if registration.protocol_version != request.protocol_version {
+            return Err(RegistrationError::ProtocolVersion);
         }
         if registration.last_seen_at.is_none() && now - registration.issued_at > REGISTRATION_TTL {
             return Err(RegistrationError::Expired);
@@ -264,7 +338,10 @@ impl LoaderRegistry {
         &self,
         report: &LoaderStatusReport,
     ) -> Result<(), RegistrationError> {
-        if report.protocol_version != PROTOCOL_VERSION {
+        if !matches!(
+            report.protocol_version,
+            LEGACY_PROTOCOL_VERSION | PREVIOUS_PROTOCOL_VERSION | PROTOCOL_VERSION
+        ) {
             return Err(RegistrationError::ProtocolVersion);
         }
         let now = Utc::now();
@@ -276,6 +353,9 @@ impl LoaderRegistry {
             .ok_or(RegistrationError::Unknown)?;
         if registration.mac_address != report.mac_address {
             return Err(RegistrationError::MacMismatch);
+        }
+        if registration.protocol_version != report.protocol_version {
+            return Err(RegistrationError::ProtocolVersion);
         }
         if registration.superseded_at.is_some() {
             state
@@ -359,7 +439,12 @@ fn prune(state: &mut LoaderRegistryState, now: DateTime<Utc>) {
         .map(|mac| (mac, has_live_superseded_report(state, mac, now)))
         .collect::<BTreeMap<_, _>>();
     for (mac, device) in &mut state.devices {
-        device.conflict = conflicts.get(mac).copied().unwrap_or(false);
+        let v5_conflict = device.conflict
+            && !state
+                .registrations
+                .contains_key(&device.current_registration_id)
+            && now - device.last_seen_at < ONLINE_TTL;
+        device.conflict = v5_conflict || conflicts.get(mac).copied().unwrap_or(false);
     }
 }
 
@@ -405,9 +490,51 @@ async fn serve_udp_discovery(
     socket: UdpSocket,
 ) -> anyhow::Result<()> {
     let mut buffer = [0_u8; MAX_DISCOVERY_DATAGRAM_BYTES + 1];
+    let in_progress = Arc::new(Mutex::new(BTreeMap::<
+        httpboot_protocol::MacAddress,
+        (String, tokio::task::AbortHandle),
+    >::new()));
     loop {
         let (length, peer) = socket.recv_from(&mut buffer).await?;
         if length > MAX_DISCOVERY_DATAGRAM_BYTES {
+            continue;
+        }
+        if let Ok(announcement) = serde_json::from_slice::<LoaderAnnouncement>(&buffer[..length])
+            && matches!(
+                announcement.protocol_version,
+                DEVICE_PROTOCOL_VERSION | httpboot_protocol::PREVIOUS_DEVICE_PROTOCOL_VERSION
+            )
+        {
+            state
+                .loader_registry
+                .touch_announcement(&announcement, &peer.ip().to_string())
+                .await;
+            let mac = announcement.mac_address;
+            let mut running = in_progress.lock().await;
+            if let Some((epoch, task)) = running.get(&mac) {
+                if *epoch == announcement.boot_epoch {
+                    continue;
+                }
+                task.abort();
+            }
+            let active = in_progress.clone();
+            let device_state = state.clone();
+            let epoch = announcement.boot_epoch.clone();
+            let active_epoch = epoch.clone();
+            let task = tokio::spawn(async move {
+                if let Err(error) = crate::device::reconcile(device_state, announcement, peer).await
+                {
+                    log::warn!("device {} at {}: {error:#}", mac, peer);
+                }
+                let mut running = active.lock().await;
+                if running
+                    .get(&mac)
+                    .is_some_and(|(current, _)| *current == active_epoch)
+                {
+                    running.remove(&mac);
+                }
+            });
+            running.insert(mac, (epoch, task.abort_handle()));
             continue;
         }
         let Ok(probe) = serde_json::from_slice::<LoaderDiscoveryProbe>(&buffer[..length]) else {
@@ -438,6 +565,62 @@ mod tests {
     use super::*;
     use httpboot_protocol::{BootArch, LoaderStatusPhase, PROTOCOL_VERSION};
 
+    #[tokio::test]
+    async fn v5_announcement_requires_matching_observed_epoch_and_address() {
+        let registry = LoaderRegistry::new();
+        let mac = "02:00:00:00:00:01".parse().unwrap();
+        let announcement = LoaderAnnouncement {
+            serial_id: None,
+            serial_ready: false,
+            protocol_version: DEVICE_PROTOCOL_VERSION,
+            mac_address: mac,
+            current_mac_address: mac,
+            arch: BootArch::X86_64,
+            loader_version: "test".into(),
+            boot_epoch: "generation-1".into(),
+            http_port: 2999,
+        };
+        let mut observed = LoaderDeviceStatus {
+            serial: None,
+            protocol_version: DEVICE_PROTOCOL_VERSION,
+            boot_epoch: "generation-2".into(),
+            mac_address: mac,
+            current_mac_address: mac,
+            arch: BootArch::X86_64,
+            loader_version: "test".into(),
+            hardware: LoaderHardwareInfo::default(),
+            boot: None,
+            ota: None,
+        };
+        assert!(
+            registry
+                .accept_announcement(&announcement, &observed, "127.0.0.1".into())
+                .await
+                .is_err()
+        );
+        assert!(registry.snapshots().await.is_empty());
+        observed.boot_epoch = announcement.boot_epoch.clone();
+        assert!(
+            !registry
+                .accept_announcement(&announcement, &observed, "127.0.0.1".into())
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            registry.snapshots().await[0]
+                .current_registration_id
+                .as_deref(),
+            Some("generation-1")
+        );
+        assert!(
+            registry
+                .accept_announcement(&announcement, &observed, "127.0.0.2".into())
+                .await
+                .unwrap()
+        );
+        assert!(registry.snapshots().await[0].conflict);
+    }
+
     fn probe(mac: MacAddress) -> LoaderDiscoveryProbe {
         LoaderDiscoveryProbe {
             protocol_version: PROTOCOL_VERSION,
@@ -458,6 +641,7 @@ mod tests {
             arch: BootArch::X86_64,
             loader_version: "test".into(),
             hardware: LoaderHardwareInfo::default(),
+            ota: None,
         }
     }
 

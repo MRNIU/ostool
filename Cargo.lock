@@ -616,9 +616,9 @@ checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 
 [[package]]
 name = "chacha20"
-version = "0.10.1"
+version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d524456ba66e72eb8b115ff89e01e497f8e6d11d78b70b1aa13c0fbd97540a81"
+checksum = "65c35e4b699c7e15ccbe7ee35c005e4fc0a278d22238a2857e6ce2dadeda1b06"
 dependencies = [
  "cfg-if",
  "cpufeatures 0.3.0",
@@ -1093,6 +1093,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "66b7e2430c6dff6a955451e2cfc438f09cea1965a9d6f87f7e3b90decc014099"
 
 [[package]]
+name = "enum_dispatch"
+version = "0.3.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aa18ce2bc66555b3218614519ac839ddb759a7d6720732f979ef8d13be147ecd"
+dependencies = [
+ "once_cell",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "enumflags2"
 version = "0.7.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1205,6 +1217,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f1f227452a390804cdb637b74a86990f2a7d7ba4b7d5693aac9b4dd6defd8d6"
 
 [[package]]
+name = "fdt-edit"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bda8ff88f0dd8770b247b17d9e0faf293c52cb5733e2500294ffa93ac1f0b384"
+dependencies = [
+ "enum_dispatch",
+ "fdt-raw",
+ "log",
+]
+
+[[package]]
+name = "fdt-raw"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "91e6747052012035c3473585be1d706207893d8db73101825d8a3f75effa9843"
+dependencies = [
+ "heapless",
+ "log",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "filedescriptor"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1239,7 +1273,7 @@ checksum = "9844ddc3a6e533d62bba727eb6c28b5d360921d5175e9ff0f1e621a5c590a4d5"
 
 [[package]]
 name = "fitimage"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "byteorder",
@@ -1514,6 +1548,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hash32"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47d60b12902ba28e2730cd37e95b8c9223af2808df9e902d4df49588d1470606"
+dependencies = [
+ "byteorder",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1551,6 +1594,16 @@ dependencies = [
  "allocator-api2",
  "equivalent",
  "foldhash 0.2.0",
+]
+
+[[package]]
+name = "heapless"
+version = "0.9.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "25ba4bd83f9415b58b4ed8dc5714c76e626a105be4646c02630ad730ad3b5aa4"
+dependencies = [
+ "hash32",
+ "stable_deref_trait",
 ]
 
 [[package]]
@@ -1636,7 +1689,7 @@ checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 
 [[package]]
 name = "httpboot-protocol"
-version = "0.2.1"
+version = "0.5.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2707,7 +2760,7 @@ dependencies = [
 
 [[package]]
 name = "ostool"
-version = "0.29.5"
+version = "0.31.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2718,6 +2771,7 @@ dependencies = [
  "colored",
  "crossterm",
  "env_logger",
+ "fdt-edit",
  "fitimage",
  "fs4",
  "futures",
@@ -2729,6 +2783,7 @@ dependencies = [
  "lzma-rs",
  "network-interface",
  "object",
+ "ostool-serial",
  "ratatui",
  "regex",
  "reqwest",
@@ -2753,8 +2808,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "ostool-serial"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "httpboot-protocol",
+ "libc",
+ "log",
+ "nix 0.30.1",
+ "serde",
+ "serialport",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-serial",
+]
+
+[[package]]
 name = "ostool-server"
-version = "0.7.3"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2773,6 +2845,8 @@ dependencies = [
  "nix 0.30.1",
  "notify",
  "nusb",
+ "ostool-serial",
+ "reqwest",
  "rust-embed",
  "schemars",
  "serde",
@@ -4685,7 +4759,7 @@ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
 name = "uboot-shell"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "colored",
  "env_logger",

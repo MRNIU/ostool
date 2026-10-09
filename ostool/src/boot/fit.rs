@@ -15,7 +15,7 @@ use crate::{
         elf_metadata::ElfMetadata,
         runtime::{PreparedRuntimeArtifacts, RuntimeArtifactOptions, prepare_runtime_artifacts},
     },
-    boot::fit_config::{FitConfig, FitFormat, FitOs},
+    boot::fit_config::{FitAddress, FitConfig, FitFormat, FitOs},
     process::ProcessContext,
     utils::PathResultExt,
 };
@@ -91,7 +91,7 @@ pub(crate) async fn generate_configured_fit(
     {
         anyhow::bail!("source and runtime ELF load layouts differ; prepare the selected ELF again");
     }
-    let (load, entry) = config.resolve_addresses(&metadata)?;
+    let load = config.resolve_load(&metadata)?;
     let output = match &config.output {
         Some(path) => path.clone(),
         None => default_output_path(prepared.elf())?,
@@ -141,6 +141,16 @@ pub(crate) async fn generate_configured_fit(
     if kernel_data.is_empty() {
         anyhow::bail!("cannot build FIT with an empty kernel payload");
     }
+    let entry = if config.entry == FitAddress::Auto
+        && config.format == FitFormat::Bin
+        && config.os == FitOs::Linux
+        && metadata.arch == Architecture::LoongArch64
+        && kernel_data.starts_with(LOONGARCH_IMAGE_MAGIC)
+    {
+        resolve_kernel_entry_addr(metadata.arch, &kernel_data, load, metadata.entry)?
+    } else {
+        config.resolve_entry(&metadata, load)?
+    };
     // Replace the output directory entry only after success. In particular, a
     // hard link to an input must not truncate that input's shared inode.
     let output_dir = output

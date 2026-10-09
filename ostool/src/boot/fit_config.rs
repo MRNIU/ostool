@@ -74,25 +74,86 @@ impl Default for FitConfig {
 }
 
 impl FitConfig {
-    /// Resolves FIT addresses from the original, unstripped ELF metadata.
-    pub(crate) fn resolve_addresses(&self, metadata: &ElfMetadata) -> Result<(u64, u64)> {
-        let load = match self.load {
-            FitAddress::Explicit(address) => address,
+    /// Resolves the payload load address from the original, unstripped ELF.
+    pub(crate) fn resolve_load(&self, metadata: &ElfMetadata) -> Result<u64> {
+        if self.os == FitOs::Elf && self.format != FitFormat::Elf {
+            bail!("FIT OS elf requires format elf and U-Boot CONFIG_BOOTM_ELF");
+        }
+        match self.load {
+            FitAddress::Explicit(address) => Ok(address),
+            // An ELF container needs staging memory, independent of its runtime
+            // sections. Metadata cannot establish a safe region on the board.
+            FitAddress::Auto if self.os == FitOs::Elf => {
+                bail!("FIT OS elf requires an explicit load address in safe staging memory")
+            }
+            FitAddress::Auto if self.format == FitFormat::Bin => {
+                let base = bin_load_base(metadata)?;
+                if metadata
+                    .executable_start
+                    .is_some_and(|address| address != base)
+                {
+                    bail!(
+                        "cannot derive BIN FIT load address: __executable_start differs from the first payload LMA; set load explicitly"
+                    );
+                }
+                Ok(base)
+            }
             FitAddress::Auto => match metadata.executable_start {
-                // The linker-provided origin describes the selected project's image base.
-                Some(address) => address,
-                None => match self.format {
-                    FitFormat::Elf => elf_load_base(metadata)?,
-                    FitFormat::Bin => bin_load_base(metadata)?,
-                },
+                Some(address) => Ok(address),
+                None => elf_load_base(metadata),
             },
-        };
-        let entry = match self.entry {
-            FitAddress::Explicit(address) => address,
-            FitAddress::Auto => metadata.entry,
-        };
-        Ok((load, entry))
+        }
     }
+
+    /// FIT OS elf passes the ELF container address to bootelf, which reads e_entry
+    /// itself. Other OS handlers consume an execution address.
+    pub(crate) fn resolve_entry(&self, metadata: &ElfMetadata, load: u64) -> Result<u64> {
+        if self.os == FitOs::Elf {
+            if let FitAddress::Explicit(address) = self.entry
+                && address != load
+            {
+                bail!("FIT OS elf entry must equal the ELF payload load address; use entry auto");
+            }
+            return Ok(load);
+        }
+        match self.entry {
+            FitAddress::Explicit(address) => Ok(address),
+            FitAddress::Auto if self.format == FitFormat::Bin => bin_entry(metadata, load),
+            FitAddress::Auto => Ok(metadata.entry),
+        }
+    }
+}
+
+fn bin_entry(metadata: &ElfMetadata, load: u64) -> Result<u64> {
+    // Raw bytes carry no relocation or address-mapping contract. Only preserve
+    // e_entry when it still addresses its original bytes without either.
+    if load != bin_load_base(metadata)? {
+        bail!("cannot derive BIN FIT entry for a relocated payload; set entry explicitly");
+    }
+    let mut found = false;
+    for section in &metadata.load_sections {
+        if metadata.entry >= section.virtual_address
+            && metadata.entry
+                < checked_end(
+                    section.virtual_address,
+                    section.size,
+                    "section virtual range",
+                )?
+        {
+            if section_lma(section, &metadata.load_segments)? != section.virtual_address {
+                bail!(
+                    "cannot derive BIN FIT entry: ELF entry VMA differs from its LMA; set entry explicitly"
+                );
+            }
+            found = true;
+        }
+    }
+    if !found {
+        bail!(
+            "cannot derive BIN FIT entry: ELF entry is outside the file-backed payload; set entry explicitly"
+        );
+    }
+    Ok(metadata.entry)
 }
 
 fn elf_load_base(metadata: &ElfMetadata) -> Result<u64> {
@@ -223,13 +284,13 @@ mod tests {
     use object::Architecture;
 
     #[test]
-    fn auto_load_distinguishes_elf_container_and_bin_payload() {
-        let metadata = ElfMetadata {
+    fn resolves_payload_addresses_and_rejects_ambiguous_auto_values() {
+        let mut metadata = ElfMetadata {
             arch: Architecture::Riscv64,
             entry: 0x8000_0100,
             executable_start: None,
             load_segments: vec![LoadSegment {
-                virtual_address: 0,
+                virtual_address: 0x8000_0000,
                 physical_address: 0x8000_0000,
                 file_offset: 0x100,
                 file_size: 0x200,
@@ -238,15 +299,42 @@ mod tests {
                 flags: 0,
             }],
             load_sections: vec![LoadSection {
-                virtual_address: 0x100,
+                virtual_address: 0x8000_0100,
                 file_offset: 0x200,
                 size: 0x20,
             }],
         };
         let mut config = FitConfig::default();
-        assert_eq!(config.resolve_addresses(&metadata).unwrap().0, 0x8000_0100);
+        let load = config.resolve_load(&metadata).unwrap();
+        assert_eq!(load, 0x8000_0100);
+        assert_eq!(
+            config.resolve_entry(&metadata, load).unwrap(),
+            metadata.entry
+        );
+        metadata.executable_start = Some(0x9000_0100);
+        assert!(config.resolve_load(&metadata).is_err());
+        metadata.load_segments[0].virtual_address += 0x1000_0000;
+        metadata.load_sections[0].virtual_address += 0x1000_0000;
+        metadata.entry += 0x1000_0000;
+        assert!(config.resolve_entry(&metadata, load).is_err());
+        config.entry = FitAddress::Explicit(0);
+        config.load = FitAddress::Explicit(0);
+        assert_eq!(config.resolve_load(&metadata).unwrap(), 0);
+        assert_eq!(config.resolve_entry(&metadata, 0).unwrap(), 0);
+        config.load = FitAddress::Auto;
+        metadata.executable_start = None;
         config.format = FitFormat::Elf;
-        assert_eq!(config.resolve_addresses(&metadata).unwrap().0, 0x7fff_ff00);
+        let load = config.resolve_load(&metadata).unwrap();
+        assert_eq!(load, 0x7fff_ff00);
+        config.os = FitOs::Elf;
+        assert!(config.resolve_load(&metadata).is_err());
+        config.load = FitAddress::Explicit(load);
+        config.entry = FitAddress::Auto;
+        assert_eq!(config.resolve_entry(&metadata, load).unwrap(), load);
+        config.entry = FitAddress::Explicit(metadata.entry);
+        assert!(config.resolve_entry(&metadata, load).is_err());
+        config.format = FitFormat::Bin;
+        assert!(config.resolve_load(&metadata).is_err());
     }
 
     #[test]

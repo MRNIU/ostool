@@ -98,10 +98,18 @@ impl FitConfig {
                 }
                 Ok(base)
             }
-            FitAddress::Auto => match metadata.executable_start {
-                Some(address) => Ok(address),
-                None => elf_load_base(metadata),
-            },
+            FitAddress::Auto => {
+                let base = elf_load_base(metadata)?;
+                if metadata
+                    .executable_start
+                    .is_some_and(|address| address != base)
+                {
+                    bail!(
+                        "cannot derive ELF FIT load address: __executable_start differs from the ELF container base; set load explicitly"
+                    );
+                }
+                Ok(base)
+            }
         }
     }
 
@@ -118,17 +126,20 @@ impl FitConfig {
         }
         match self.entry {
             FitAddress::Explicit(address) => Ok(address),
-            FitAddress::Auto if self.format == FitFormat::Bin => bin_entry(metadata, load),
-            FitAddress::Auto => Ok(metadata.entry),
+            FitAddress::Auto => direct_entry(metadata, load, self.format),
         }
     }
 }
 
-fn bin_entry(metadata: &ElfMetadata, load: u64) -> Result<u64> {
+fn direct_entry(metadata: &ElfMetadata, load: u64, format: FitFormat) -> Result<u64> {
     // Raw bytes carry no relocation or address-mapping contract. Only preserve
     // e_entry when it still addresses its original bytes without either.
-    if load != bin_load_base(metadata)? {
-        bail!("cannot derive BIN FIT entry for a relocated payload; set entry explicitly");
+    let base = match format {
+        FitFormat::Bin => bin_load_base(metadata)?,
+        FitFormat::Elf => elf_load_base(metadata)?,
+    };
+    if load != base {
+        bail!("cannot derive FIT entry for a relocated payload; set entry explicitly");
     }
     let mut found = false;
     for section in &metadata.load_sections {
@@ -142,7 +153,7 @@ fn bin_entry(metadata: &ElfMetadata, load: u64) -> Result<u64> {
         {
             if section_lma(section, &metadata.load_segments)? != section.virtual_address {
                 bail!(
-                    "cannot derive BIN FIT entry: ELF entry VMA differs from its LMA; set entry explicitly"
+                    "cannot derive FIT entry: ELF entry VMA differs from its LMA; set entry explicitly"
                 );
             }
             found = true;
@@ -150,7 +161,7 @@ fn bin_entry(metadata: &ElfMetadata, load: u64) -> Result<u64> {
     }
     if !found {
         bail!(
-            "cannot derive BIN FIT entry: ELF entry is outside the file-backed payload; set entry explicitly"
+            "cannot derive FIT entry: ELF entry is outside the file-backed payload; set entry explicitly"
         );
     }
     Ok(metadata.entry)
@@ -326,6 +337,18 @@ mod tests {
         config.format = FitFormat::Elf;
         let load = config.resolve_load(&metadata).unwrap();
         assert_eq!(load, 0x7fff_ff00);
+        // A VMA symbol cannot override the file base, even if it names entry.
+        metadata.executable_start = Some(metadata.entry);
+        assert!(config.resolve_load(&metadata).is_err());
+        metadata.executable_start = Some(load);
+        assert_eq!(config.resolve_load(&metadata).unwrap(), load);
+        config.entry = FitAddress::Auto;
+        assert!(config.resolve_entry(&metadata, load).is_err());
+        config.entry = FitAddress::Explicit(metadata.entry);
+        assert_eq!(
+            config.resolve_entry(&metadata, load).unwrap(),
+            metadata.entry
+        );
         config.os = FitOs::Elf;
         assert!(config.resolve_load(&metadata).is_err());
         config.load = FitAddress::Explicit(load);

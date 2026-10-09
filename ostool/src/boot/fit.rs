@@ -141,6 +141,8 @@ pub(crate) async fn generate_configured_fit(
     if kernel_data.is_empty() {
         anyhow::bail!("cannot build FIT with an empty kernel payload");
     }
+    // The Linux image header takes precedence over metadata-only inference.
+    // These branches are exclusive: an explicit entry never reads the header.
     let entry = if config.entry == FitAddress::Auto
         && config.format == FitFormat::Bin
         && config.os == FitOs::Linux
@@ -157,7 +159,28 @@ pub(crate) async fn generate_configured_fit(
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
-    let temporary = tempfile::NamedTempFile::new_in(output_dir)
+    #[cfg(unix)]
+    let output_permissions = match fs::metadata(&output).await {
+        Ok(metadata) => Some(metadata.permissions()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(error).with_path("failed to read FIT output permissions", &output);
+        }
+    };
+    let builder = tempfile::Builder::new();
+    #[cfg(unix)]
+    let builder = {
+        use std::os::unix::fs::PermissionsExt;
+        let mut builder = builder;
+        // New outputs follow normal file creation (0666 masked by umask).
+        // Keep replacements private until their existing mode is restored.
+        if output_permissions.is_none() {
+            builder.permissions(std::fs::Permissions::from_mode(0o666));
+        }
+        builder
+    };
+    let temporary = builder
+        .tempfile_in(output_dir)
         .with_path("failed to stage FIT output", &output)?;
     write_fit_image(
         FitInput {
@@ -171,10 +194,16 @@ pub(crate) async fn generate_configured_fit(
             output_path: Some(temporary.path().to_path_buf()),
         },
         kernel_data,
-        entry,
         config.os,
     )
     .await?;
+    #[cfg(unix)]
+    if let Some(permissions) = output_permissions {
+        temporary
+            .as_file()
+            .set_permissions(permissions)
+            .with_path("failed to preserve FIT output permissions", &output)?;
+    }
     temporary
         .persist(&output)
         .map_err(|error| error.error)
@@ -216,7 +245,7 @@ fn validate_elf_load_data(metadata: &ElfMetadata, file_size: usize) -> anyhow::R
 }
 
 /// Existing U-Boot path: Linux payload with its historical header handling.
-pub(crate) async fn generate_fit_image(input: FitInput) -> anyhow::Result<GeneratedFitImage> {
+pub(crate) async fn generate_fit_image(mut input: FitInput) -> anyhow::Result<GeneratedFitImage> {
     info!("Making FIT image...");
 
     let kernel_data = fs::read(&input.kernel_path)
@@ -239,13 +268,13 @@ pub(crate) async fn generate_fit_image(input: FitInput) -> anyhow::Result<Genera
         info!("resolved LoongArch kernel entry: {kernel_entry_addr:#x}");
     }
 
-    write_fit_image(input, kernel_data, kernel_entry_addr, FitOs::Linux).await
+    input.kernel_entry_addr = kernel_entry_addr;
+    write_fit_image(input, kernel_data, FitOs::Linux).await
 }
 
 async fn write_fit_image(
     input: FitInput,
     kernel_data: Vec<u8>,
-    kernel_entry_addr: u64,
     os: FitOs,
 ) -> anyhow::Result<GeneratedFitImage> {
     let arch_name = fit_arch_name(input.arch)?;
@@ -284,7 +313,7 @@ async fn write_fit_image(
         dtb_data,
         initramfs_data,
         input.kernel_load_addr,
-        kernel_entry_addr,
+        input.kernel_entry_addr,
         input.fdt_load_addr,
     );
 

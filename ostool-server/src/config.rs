@@ -533,6 +533,10 @@ pub struct BoardConfig {
 }
 
 impl BoardConfig {
+    pub fn serial_available(&self) -> bool {
+        self.serial.is_some() || matches!(self.boot, BootConfig::UefiHttp(_))
+    }
+
     pub fn validate(&self) -> anyhow::Result<()> {
         if let BootConfig::Uboot(profile) = &self.boot {
             profile.validate()?;
@@ -540,20 +544,26 @@ impl BoardConfig {
         if matches!(self.boot, BootConfig::UefiHttp(_)) && self.network_identity.is_none() {
             anyhow::bail!("network_identity.mac_address is required for httpboot boards");
         }
+        if let BootConfig::UefiHttp(profile) = &self.boot
+            && let Some(parameters) = profile.serial_parameters
+        {
+            parameters.validate()?;
+            if !matches!(self.power_management, PowerManagementConfig::Qemu { .. }) {
+                ostool_serial::validate_host_parameters(parameters.into_protocol()).map_err(
+                    |error| {
+                        anyhow::anyhow!(
+                            "boot.serial_parameters is unsupported by the host serial backend: {error}"
+                        )
+                    },
+                )?;
+            }
+        }
         if let PowerManagementConfig::Qemu { virtual_device_id } = &self.power_management {
             if !matches!(self.boot, BootConfig::UefiHttp(_)) {
                 anyhow::bail!("QEMU boards must use httpboot");
             }
             if virtual_device_id.trim().is_empty() {
                 anyhow::bail!("QEMU virtual_device_id must not be empty");
-            }
-            let serial = self
-                .serial
-                .as_ref()
-                .context("QEMU boards must configure a QEMU serial key")?;
-            if serial.key.kind != SerialPortKeyKind::Qemu || serial.key.value != *virtual_device_id
-            {
-                anyhow::bail!("QEMU power and serial must reference the same virtual_device_id");
             }
             if self.network_identity.is_none() {
                 anyhow::bail!("QEMU boards must configure network_identity.mac_address");
@@ -717,6 +727,106 @@ pub enum UefiBootArch {
 pub struct UefiHttpProfile {
     #[serde(default)]
     pub boot_arch: Option<UefiBootArch>,
+    /// Optional host-side UART settings for axloader serial discovery.
+    ///
+    /// When omitted, the server uses the parameters reported by axloader (or
+    /// its protocol fallback). This setting is intentionally separate from
+    /// [`BoardConfig::serial`], which is retained for U-Boot/PXE consoles.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub serial_parameters: Option<AxloaderSerialParameters>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct AxloaderSerialParameters {
+    pub baud_rate: u64,
+    pub data_bits: u8,
+    pub parity: AxloaderSerialParity,
+    pub stop_bits: AxloaderSerialStopBits,
+    pub flow_control: AxloaderSerialFlowControl,
+}
+
+impl AxloaderSerialParameters {
+    pub fn validate(self) -> anyhow::Result<()> {
+        if self.baud_rate == 0 {
+            anyhow::bail!("boot.serial_parameters.baud_rate must be greater than 0");
+        }
+        if !matches!(self.data_bits, 7 | 8) {
+            anyhow::bail!("boot.serial_parameters.data_bits must be 7 or 8");
+        }
+        Ok(())
+    }
+
+    pub fn into_protocol(self) -> httpboot_protocol::SerialParameters {
+        httpboot_protocol::SerialParameters {
+            baud_rate: self.baud_rate,
+            data_bits: self.data_bits,
+            parity: self.parity.into(),
+            stop_bits: self.stop_bits.into(),
+            flow_control: self.flow_control.into(),
+        }
+    }
+}
+
+impl From<AxloaderSerialParameters> for httpboot_protocol::SerialParameters {
+    fn from(value: AxloaderSerialParameters) -> Self {
+        value.into_protocol()
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AxloaderSerialParity {
+    None,
+    Odd,
+    Even,
+    Mark,
+    Space,
+}
+
+impl From<AxloaderSerialParity> for httpboot_protocol::SerialParity {
+    fn from(value: AxloaderSerialParity) -> Self {
+        match value {
+            AxloaderSerialParity::None => Self::None,
+            AxloaderSerialParity::Odd => Self::Odd,
+            AxloaderSerialParity::Even => Self::Even,
+            AxloaderSerialParity::Mark => Self::Mark,
+            AxloaderSerialParity::Space => Self::Space,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AxloaderSerialStopBits {
+    One,
+    OnePointFive,
+    Two,
+}
+
+impl From<AxloaderSerialStopBits> for httpboot_protocol::SerialStopBits {
+    fn from(value: AxloaderSerialStopBits) -> Self {
+        match value {
+            AxloaderSerialStopBits::One => Self::One,
+            AxloaderSerialStopBits::OnePointFive => Self::OnePointFive,
+            AxloaderSerialStopBits::Two => Self::Two,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AxloaderSerialFlowControl {
+    None,
+    RtsCts,
+}
+
+impl From<AxloaderSerialFlowControl> for httpboot_protocol::SerialFlowControl {
+    fn from(value: AxloaderSerialFlowControl) -> Self {
+        match value {
+            AxloaderSerialFlowControl::None => Self::None,
+            AxloaderSerialFlowControl::RtsCts => Self::RtsCts,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -730,9 +840,11 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        BoardConfig, BoardNetworkIdentity, BootConfig, CustomPowerManagement,
-        PowerManagementConfig, SerialPortKey, SerialPortKeyKind, ServerConfig, UbootNetworkMode,
-        UbootProfile, UefiBootArch, UefiHttpProfile, ZhongshengRelayPowerManagement,
+        AxloaderSerialFlowControl, AxloaderSerialParameters, AxloaderSerialParity,
+        AxloaderSerialStopBits, BoardConfig, BoardNetworkIdentity, BootConfig,
+        CustomPowerManagement, PowerManagementConfig, SerialPortKey, SerialPortKeyKind,
+        ServerConfig, UbootNetworkMode, UbootProfile, UefiBootArch, UefiHttpProfile,
+        ZhongshengRelayPowerManagement,
     };
 
     #[test]
@@ -1092,6 +1204,7 @@ bootm_addr = "0x82200000"
             }),
             boot: BootConfig::UefiHttp(UefiHttpProfile {
                 boot_arch: Some(UefiBootArch::X86_64),
+                serial_parameters: None,
             }),
             network_identity: Some(BoardNetworkIdentity {
                 mac_address: "02:00:00:00:00:01".parse().unwrap(),
@@ -1109,10 +1222,89 @@ bootm_addr = "0x82200000"
             panic!("expected httpboot");
         };
         assert_eq!(profile.boot_arch, Some(UefiBootArch::X86_64));
+        assert_eq!(profile.serial_parameters, None);
         assert_eq!(
             decoded.network_identity.unwrap().mac_address.to_string(),
             "02:00:00:00:00:01"
         );
+    }
+
+    #[test]
+    fn httpboot_serial_parameters_are_optional_and_round_trip() {
+        let parameters = AxloaderSerialParameters {
+            baud_rate: 921_600,
+            data_bits: 8,
+            parity: AxloaderSerialParity::Even,
+            stop_bits: AxloaderSerialStopBits::Two,
+            flow_control: AxloaderSerialFlowControl::RtsCts,
+        };
+        let board = BoardConfig {
+            id: "uefi-http-serial".into(),
+            board_type: "x86_64-uefi-http".into(),
+            tags: vec![],
+            serial: None,
+            power_management: PowerManagementConfig::Custom(CustomPowerManagement {
+                power_on_cmd: "true".into(),
+                power_off_cmd: "true".into(),
+            }),
+            boot: BootConfig::UefiHttp(UefiHttpProfile {
+                boot_arch: Some(UefiBootArch::X86_64),
+                serial_parameters: Some(parameters),
+            }),
+            network_identity: Some(BoardNetworkIdentity {
+                mac_address: "02:00:00:00:00:01".parse().unwrap(),
+            }),
+            notes: None,
+            disabled: false,
+        };
+
+        let encoded = toml::to_string(&board).unwrap();
+        assert!(encoded.contains("serial_parameters"));
+        let decoded: BoardConfig = toml::from_str(&encoded).unwrap();
+        let BootConfig::UefiHttp(profile) = decoded.boot else {
+            panic!("expected httpboot");
+        };
+        assert_eq!(profile.serial_parameters, Some(parameters));
+        assert_eq!(parameters.into_protocol().baud_rate, 921_600);
+    }
+
+    #[test]
+    fn physical_httpboot_rejects_host_unsupported_serial_modes() {
+        let mut board = BoardConfig {
+            id: "uefi-http-serial-invalid".into(),
+            board_type: "x86_64-uefi-http".into(),
+            tags: vec![],
+            serial: None,
+            power_management: PowerManagementConfig::Custom(CustomPowerManagement {
+                power_on_cmd: "true".into(),
+                power_off_cmd: "true".into(),
+            }),
+            boot: BootConfig::UefiHttp(UefiHttpProfile {
+                boot_arch: Some(UefiBootArch::X86_64),
+                serial_parameters: Some(AxloaderSerialParameters {
+                    baud_rate: 115_200,
+                    data_bits: 8,
+                    parity: AxloaderSerialParity::Mark,
+                    stop_bits: AxloaderSerialStopBits::One,
+                    flow_control: AxloaderSerialFlowControl::None,
+                }),
+            }),
+            network_identity: Some(BoardNetworkIdentity {
+                mac_address: "02:00:00:00:00:01".parse().unwrap(),
+            }),
+            notes: None,
+            disabled: false,
+        };
+        let error = board.validate().unwrap_err().to_string();
+        assert!(error.contains("unsupported by the host serial backend"));
+
+        if let BootConfig::UefiHttp(profile) = &mut board.boot {
+            profile.serial_parameters.as_mut().unwrap().parity = AxloaderSerialParity::None;
+            profile.serial_parameters.as_mut().unwrap().stop_bits =
+                AxloaderSerialStopBits::OnePointFive;
+        }
+        let error = board.validate().unwrap_err().to_string();
+        assert!(error.contains("unsupported by the host serial backend"));
     }
 
     #[test]
@@ -1128,6 +1320,7 @@ bootm_addr = "0x82200000"
             }),
             boot: BootConfig::UefiHttp(UefiHttpProfile {
                 boot_arch: Some(UefiBootArch::X86_64),
+                serial_parameters: None,
             }),
             network_identity: None,
             notes: None,
@@ -1148,7 +1341,7 @@ bootm_addr = "0x82200000"
     }
 
     #[test]
-    fn qemu_board_requires_httpboot_and_matching_virtual_serial() {
+    fn qemu_board_requires_httpboot_and_derives_virtual_serial() {
         let mut board = BoardConfig {
             id: "qemu-01".into(),
             board_type: "qemu-x86_64".into(),
@@ -1179,16 +1372,12 @@ bootm_addr = "0x82200000"
         );
         board.boot = BootConfig::UefiHttp(UefiHttpProfile {
             boot_arch: Some(UefiBootArch::X86_64),
+            serial_parameters: None,
         });
         board.validate().unwrap();
-        board.serial.as_mut().unwrap().key.value = "virtual-2".into();
-        assert!(
-            board
-                .validate()
-                .unwrap_err()
-                .to_string()
-                .contains("QEMU power and serial must reference the same virtual_device_id")
-        );
+        board.serial = None;
+        board.validate().unwrap();
+        assert!(board.serial_available());
     }
 
     #[test]

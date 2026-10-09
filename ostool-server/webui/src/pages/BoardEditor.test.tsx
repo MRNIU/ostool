@@ -75,7 +75,9 @@ it("only prefills the MAC and does not require board identity for a power comman
   const user = userEvent.setup();
   expect(screen.getByLabelText("MAC 地址")).toHaveValue("02:00:00:00:00:21");
   expect(screen.getByLabelText("板型")).toHaveValue("");
-  expect(screen.getByRole("checkbox", { name: "启用串口" })).not.toBeChecked();
+  expect(
+    screen.queryByRole("checkbox", { name: "启用串口" }),
+  ).not.toBeInTheDocument();
   await user.type(screen.getByLabelText("上电命令"), "true");
   await user.click(screen.getByRole("button", { name: "上电" }));
   expect(power).toHaveBeenCalledOnce();
@@ -150,9 +152,15 @@ it("does not overwrite a local draft when another client edits the board", async
 });
 
 it("switches to U-Boot without requiring or submitting a stale MAC", async () => {
-  const create = vi
-    .spyOn(api, "createBoard")
-    .mockResolvedValue({} as BoardConfig);
+  const create = vi.spyOn(api, "createBoard").mockImplementation(
+    async (request) =>
+      ({
+        ...request,
+        id: "created",
+        tags: request.tags ?? [],
+        boot: request.boot,
+      }) as BoardConfig,
+  );
   mount();
   const user = userEvent.setup();
   await user.clear(screen.getByLabelText("MAC 地址"));
@@ -181,4 +189,71 @@ it("shows loader OTA when the HTTP Boot architecture is omitted", () => {
   mount(httpBootBoard());
 
   expect(screen.getByText("axloader OTA")).toBeInTheDocument();
+});
+
+it("loads and edits the optional axloader serial override", async () => {
+  const board = httpBootBoard();
+  board.boot = {
+    kind: "httpboot",
+    boot_arch: "x86_64",
+    serial_parameters: {
+      baud_rate: 921600,
+      data_bits: 7,
+      parity: "even",
+      stop_bits: "two",
+      flow_control: "rts_cts",
+    },
+  };
+  mount(board);
+  const user = userEvent.setup();
+
+  expect(screen.getByRole("checkbox", { name: "指定串口参数" })).toBeChecked();
+  expect(screen.getByLabelText("波特率")).toHaveValue(921600);
+  expect(screen.getByLabelText("数据位")).toHaveValue("7");
+  await user.selectOptions(screen.getByLabelText("数据位"), "8");
+  expect(screen.getByLabelText("数据位")).toHaveValue("8");
+});
+
+it("switches manual UART draft to axloader and preserves focus on serial SSE updates", async () => {
+  const board = httpBootBoard();
+  board.boot = {
+    kind: "uboot",
+    use_tftp: false,
+    dtb_name: null,
+    kernel_load_addr: null,
+    fit_load_addr: null,
+    bootm_addr: null,
+    network_mode: "dhcp",
+    board_ip: null,
+    server_ip: null,
+    netmask: null,
+    gatewayip: null,
+  };
+  board.serial = {
+    key: { kind: "usb_path", value: "/dev/serial/by-path/demo" },
+    baud_rate: 57600,
+  };
+  mount(board);
+  const user = userEvent.setup();
+  expect(screen.getByLabelText("波特率")).toHaveValue(57600);
+  await user.selectOptions(screen.getByLabelText("启动方式"), "httpboot");
+  expect(screen.queryByLabelText("波特率")).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("checkbox", { name: "启用串口" }),
+  ).not.toBeInTheDocument();
+  const input = screen.getByLabelText("备注");
+  await user.type(input, "local draft");
+  act(() =>
+    admin.apply({
+      epoch: "serial-state",
+      revision: 1,
+      kind: "snapshot",
+      data: { serial_manager: { pending: 2, candidates: 4, leased: 1 } },
+    }),
+  );
+  expect(screen.getByText("发现请求 2 · 候选监听 4")).toBeVisible();
+  expect(input).toHaveFocus();
+  expect(input).toHaveValue("local draft");
+  await user.selectOptions(screen.getByLabelText("启动方式"), "uboot");
+  expect(screen.getByLabelText("波特率")).toHaveValue(57600);
 });
